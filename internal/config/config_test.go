@@ -49,11 +49,29 @@ func TestLoadFromEnvAcceptsIngestionStorageConfig(t *testing.T) {
 	if !cfg.IngestionEnabled {
 		t.Fatalf("expected ingestion to be enabled")
 	}
-	if cfg.WorkerGroup != "simpletrack-anaysistics-service" {
+	if cfg.WorkerGroup != "simpletrack-anaysitics-service" {
 		t.Fatalf("unexpected worker group %q", cfg.WorkerGroup)
 	}
 	if cfg.ClickHouseTablePrefix != "events" {
 		t.Fatalf("unexpected table prefix %q", cfg.ClickHouseTablePrefix)
+	}
+}
+
+func TestLoadFromEnvAcceptsClickHouseAutoMigrateFlag(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_REDIS_ADDR", "127.0.0.1:26379")
+	t.Setenv("ANALYTICS_SERVICE_INGESTION_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/analytics?parseTime=true")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE", "true")
+	t.Setenv("ANALYTICS_SERVICE_WORKER_CONSUMER", "consumer-test")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected ingestion config to load: %v", err)
+	}
+	if !cfg.ClickHouseAutoMigrate {
+		t.Fatalf("expected ClickHouse auto migration to be enabled")
 	}
 }
 

@@ -1,6 +1,6 @@
-# simpletrack-anaysistics-service
+# simpletrack-anaysitics-service
 
-`simpletrack-anaysistics-service` is the runtime analytics data-plane service for
+`simpletrack-anaysitics-service` is the runtime analytics data-plane service for
 SimpleTrack.
 
 It is intentionally separate from the SaaS control plane. The SaaS application
@@ -48,7 +48,7 @@ $env:ANALYTICS_SERVICE_SOURCES_JSON='[
     "include_client_fingerprint":true
   }
 ]'
-go run ./cmd/simpletrack-anaysistics-service
+go run ./cmd/simpletrack-anaysitics-service
 ```
 
 `session_salt` and `client_hash_salt` are server-only runtime secrets. They must
@@ -68,12 +68,24 @@ $env:ANALYTICS_SERVICE_CLICKHOUSE_USER='analytics_core'
 $env:ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD='analytics_core'
 ```
 
-ClickHouse event and property tables are still an explicit schema concern. When
-ingestion is enabled, startup checks that each enabled source already has its
-routed event table and, when property indexing is enabled, the matching property
-table. The runtime worker wires Redis Stream, MySQL checkpoint guards,
-ClickHouse native batch writers, and typed property indexing; it does not create
-per-source ClickHouse event tables yet.
+ClickHouse event and property tables remain an explicit schema concern by
+default. When ingestion is enabled, startup checks that each enabled source
+already has its routed event table and, when property indexing is enabled, the
+matching property table.
+
+For local or small deployments, the service can create the routed ClickHouse
+tables before that validation step:
+
+```powershell
+$env:ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE='true'
+```
+
+This switch creates the per-source event table and matching `_properties` table
+for every enabled source in the current runtime config. Production deployments
+should leave it off until schema review, migration ordering, and rollback
+procedures are owned by the deployment pipeline. The runtime worker wires Redis
+Stream, MySQL checkpoint guards, ClickHouse native batch writers, and typed
+property indexing.
 
 For a throwaway demo without Redis, opt into the non-durable in-memory queue:
 

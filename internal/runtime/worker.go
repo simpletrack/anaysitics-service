@@ -57,7 +57,7 @@ func newEventWriter(ctx context.Context, cfg config.Config, mysqlDB *gorm.DB, cl
 	if err != nil {
 		return nil, err
 	}
-	if err := validateClickHouseTables(ctx, cfg, clickConn, router); err != nil {
+	if err := ensureClickHouseTables(ctx, cfg, clickConn, router); err != nil {
 		return nil, err
 	}
 
@@ -99,6 +99,59 @@ func newEventWriter(ctx context.Context, cfg config.Config, mysqlDB *gorm.DB, cl
 	return storage.NewPropertyIndexingEventWriter(eventWriter, propertyWriter, propertyGuard)
 }
 
+// ensureClickHouseTables applies optional local DDL before the fail-closed schema check.
+func ensureClickHouseTables(ctx context.Context, cfg config.Config, conn clickHouseSchemaConn, router *clickhouse.TableRouter) error {
+	if cfg.ClickHouseAutoMigrate {
+		// Auto migration is intentionally limited to the routed data tables
+		// required by enabled sources. Control-plane lifecycle and production
+		// schema reviews remain outside this runtime service.
+		if err := createClickHouseTables(ctx, cfg, conn, router); err != nil {
+			return err
+		}
+	}
+	// Always validate after optional creation so startup remains fail-closed
+	// when DDL permissions, table names, or property-table creation drift.
+	return validateClickHouseTables(ctx, cfg, conn, router)
+}
+
+// createClickHouseTables creates only the routed ClickHouse tables required by enabled sources.
+func createClickHouseTables(ctx context.Context, cfg config.Config, conn clickHouseSchemaConn, router *clickhouse.TableRouter) error {
+	for _, source := range cfg.Sources {
+		source = source.Normalize()
+		if !source.Enabled {
+			continue
+		}
+		table, err := router.RouteKey(clickhouse.RoutingKey{
+			TenantID:  source.TenantID,
+			ProjectID: source.ProjectID,
+			SourceID:  source.SourceID,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create the primary event table before the optional property table so
+		// startup fails at the earliest missing write surface.
+		eventDDL, err := clickhouse.CreateEventTableStatement(table)
+		if err != nil {
+			return err
+		}
+		if err := conn.Exec(ctx, eventDDL); err != nil {
+			return err
+		}
+		if cfg.PropertyIndexing {
+			propertyDDL, err := clickhouse.CreatePropertyTableStatement(table)
+			if err != nil {
+				return err
+			}
+			if err := conn.Exec(ctx, propertyDDL); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func validateClickHouseTables(ctx context.Context, cfg config.Config, conn clickHouseTableQuerier, router *clickhouse.TableRouter) error {
 	// Ingestion must fail closed when storage schema is missing. Otherwise
 	// /collect can return 202 while Redis messages are repeatedly nacked and
@@ -120,12 +173,23 @@ func validateClickHouseTables(ctx context.Context, cfg config.Config, conn click
 			return err
 		}
 		if cfg.PropertyIndexing {
-			if err := requireClickHouseTable(ctx, conn, table.Physical+"_properties"); err != nil {
+			propertyTable, err := clickhouse.PropertyTableFor(table)
+			if err != nil {
+				return err
+			}
+			if err := requireClickHouseTable(ctx, conn, propertyTable.Physical); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// clickHouseSchemaConn is the narrow startup DDL and validation surface.
+type clickHouseSchemaConn interface {
+	clickHouseTableQuerier
+	// Exec runs startup DDL when local ClickHouse auto migration is enabled.
+	Exec(context.Context, string, ...any) error
 }
 
 type clickHouseTableQuerier interface {

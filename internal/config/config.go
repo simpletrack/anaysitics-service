@@ -20,7 +20,7 @@ const (
 	defaultEventBus    = "redis"
 	defaultRedisStream = "analytics.events"
 	defaultDeadLetters = "analytics.events.dead"
-	defaultWorkerGroup = "simpletrack-anaysistics-service"
+	defaultWorkerGroup = "simpletrack-anaysitics-service"
 	defaultTablePrefix = "events"
 )
 
@@ -52,6 +52,7 @@ type Config struct {
 	ClickHouseUser        string                      // ClickHouseUser authenticates the ClickHouse native connection
 	ClickHousePassword    string                      // ClickHousePassword authenticates the ClickHouse native connection
 	ClickHouseTablePrefix string                      // ClickHouseTablePrefix is the safe prefix for routed event tables
+	ClickHouseAutoMigrate bool                        // ClickHouseAutoMigrate creates routed ClickHouse event tables at startup
 	PropertyIndexing      bool                        // PropertyIndexing writes typed property rows after primary events
 	Sources               []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
@@ -90,6 +91,7 @@ func LoadFromEnv() (Config, error) {
 		ClickHouseUser:        envString("ANALYTICS_SERVICE_CLICKHOUSE_USER", "default"),
 		ClickHousePassword:    envString("ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD", ""),
 		ClickHouseTablePrefix: envString("ANALYTICS_SERVICE_CLICKHOUSE_TABLE_PREFIX", defaultTablePrefix),
+		ClickHouseAutoMigrate: envBool("ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE", false),
 		PropertyIndexing:      envBool("ANALYTICS_SERVICE_PROPERTY_INDEXING", true),
 	}
 

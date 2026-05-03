@@ -1,2 +1,2 @@
-// Package config loads process configuration for simpletrack-anaysistics-service.
+// Package config loads process configuration for simpletrack-anaysitics-service.
 package config
