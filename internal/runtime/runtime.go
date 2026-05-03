@@ -11,10 +11,14 @@ import (
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/eventbus/redisstream"
 	"github.com/simpletrack/analytics-core/ingestion"
+	"github.com/simpletrack/analytics-core/storage"
+	"github.com/simpletrack/analytics-core/storage/clickhouse"
 	"github.com/simpletrack/analytics-service/internal/collectapi"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 	"github.com/valyala/fasthttp"
+	gormclickhouse "gorm.io/driver/clickhouse"
+	"gorm.io/gorm"
 )
 
 // Runtime owns the assembled analytics data-plane dependencies.
@@ -50,6 +54,15 @@ func New(cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 
+	// Build the internal query reader only when the runtime is configured to
+	// serve Events / Realtime readback over ClickHouse.
+	queryReader, queryClosers, err := newQueryReader(cfg)
+	if err != nil {
+		_ = closeAll(closers)
+		return nil, err
+	}
+	closers = append(closers, queryClosers...)
+
 	// Wire HTTP to runtime enforcement and analytics-core collect handling. The
 	// handler remains unaware of SaaS control-plane CRUD and storage adapters.
 	handler, err := collectapi.NewHandler(collectapi.Options{
@@ -60,6 +73,8 @@ func New(cfg config.Config) (*Runtime, error) {
 		TrackerScript:         tracker,
 		Resolver:              resolver,
 		Bus:                   bus,
+		QueryReader:           queryReader,
+		QueryToken:            cfg.QueryToken,
 	})
 	if err != nil {
 		_ = closeAll(closers)
@@ -129,6 +144,63 @@ func newEventBus(cfg config.Config) (eventbus.EventBus, []io.Closer, error) {
 	default:
 		return nil, nil, configError("unsupported event bus")
 	}
+}
+
+func newQueryReader(cfg config.Config) (storage.EventReader, []io.Closer, error) {
+	if !cfg.QueryEnabled {
+		return nil, nil, nil
+	}
+
+	// Open a ClickHouse read connection only when the runtime is expected to
+	// serve Events and Realtime readback.
+	startupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	queryDB, queryCloser, err := openClickHouseQuery(startupCtx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	router, err := clickhouse.NewTableRouter(cfg.ClickHouseTablePrefix)
+	if err != nil {
+		_ = queryCloser.Close()
+		return nil, nil, err
+	}
+	builder, err := clickhouse.NewEventQueryBuilder(router)
+	if err != nil {
+		_ = queryCloser.Close()
+		return nil, nil, err
+	}
+	reader, err := clickhouse.NewEventReader(queryDB, builder)
+	if err != nil {
+		_ = queryCloser.Close()
+		return nil, nil, err
+	}
+	return reader, []io.Closer{queryCloser}, nil
+}
+
+func openClickHouseQuery(ctx context.Context, cfg config.Config) (*gorm.DB, io.Closer, error) {
+	db, err := gorm.Open(gormclickhouse.New(gormclickhouse.Config{
+		DSN:                       clickHouseQueryDSN(cfg),
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{
+		DisableAutomaticPing: true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := sqlDB.PingContext(ctx); err != nil {
+		_ = sqlDB.Close()
+		return nil, nil, err
+	}
+	return db, sqlDB, nil
+}
+
+func clickHouseQueryDSN(cfg config.Config) string {
+	return "clickhouse://" + cfg.ClickHouseUser + ":" + cfg.ClickHousePassword + "@" + cfg.ClickHouseAddr + "/" + cfg.ClickHouseDatabase + "?dial_timeout=10s&read_timeout=20s"
 }
 
 func newRedisBus(cfg config.Config) (eventbus.EventBus, []io.Closer, error) {

@@ -46,9 +46,25 @@ func TestHTTPResolverResolvesSourceWithAuth(t *testing.T) {
 
 func TestHTTPResolverCachesSuccessfulSources(t *testing.T) {
 	var requestCount int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	etag := `"runtime-source-v1"`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
-		_ = json.NewEncoder(w).Encode(testRuntimeSourceConfig())
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get("If-None-Match"); got != "" {
+				t.Fatalf("expected first resolve to skip conditional request, got %q", got)
+			}
+			w.Header().Set("ETag", etag)
+			_ = json.NewEncoder(w).Encode(testRuntimeSourceConfig())
+		case 2:
+			if got := r.Header.Get("If-None-Match"); got != etag {
+				t.Fatalf("expected conditional revalidation, got %q", got)
+			}
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+		default:
+			t.Fatalf("unexpected control-plane request %d", requestCount)
+		}
 	}))
 	defer server.Close()
 
@@ -71,8 +87,37 @@ func TestHTTPResolverCachesSuccessfulSources(t *testing.T) {
 	if _, err := resolver.ResolveSource(context.Background(), "wk_live"); err != nil {
 		t.Fatalf("second resolve failed: %v", err)
 	}
-	if requestCount != 1 {
-		t.Fatalf("expected cache hit to avoid second request, got %d requests", requestCount)
+	if requestCount != 2 {
+		t.Fatalf("expected conditional revalidation, got %d requests", requestCount)
+	}
+}
+
+func TestHTTPResolverRevalidatesDisabledSources(t *testing.T) {
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			w.Header().Set("ETag", `"runtime-source-v1"`)
+			_ = json.NewEncoder(w).Encode(testRuntimeSourceConfig())
+		case 2:
+			if got := r.Header.Get("If-None-Match"); got == "" {
+				t.Fatalf("expected cached source to send conditional request")
+			}
+			w.WriteHeader(http.StatusGone)
+		default:
+			t.Fatalf("unexpected control-plane request %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	resolver := newTestHTTPResolver(t, server.URL, time.Minute)
+	if _, err := resolver.ResolveSource(context.Background(), "wk_live"); err != nil {
+		t.Fatalf("first resolve failed: %v", err)
+	}
+	_, err := resolver.ResolveSource(context.Background(), "wk_live")
+	if !errors.Is(err, ErrSourceDisabled) {
+		t.Fatalf("expected disabled source after revalidation, got %v", err)
 	}
 }
 

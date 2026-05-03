@@ -11,6 +11,7 @@ import (
 	"github.com/simpletrack/analytics-core/collect"
 	"github.com/simpletrack/analytics-core/contracts"
 	"github.com/simpletrack/analytics-core/eventbus"
+	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 	"github.com/valyala/fasthttp"
 )
@@ -27,6 +28,8 @@ type Options struct {
 	Now                   collect.Clock         // Now supplies deterministic receive time for tests
 	Resolver              controlplane.Resolver // Resolver reads runtime source configuration owned by the SaaS control plane
 	Bus                   eventbus.EventBus     // Bus receives validated analytics events for ingestion
+	QueryReader           storage.EventReader   // QueryReader serves internal Events and Realtime readback when enabled
+	QueryToken            string                // QueryToken authorizes internal Events and Realtime readback requests
 }
 
 // Handler routes health, tracker, and collect requests.
@@ -66,6 +69,9 @@ func NewHandler(opts Options) (*Handler, error) {
 	if opts.Bus == nil {
 		return nil, errors.New("event bus is required")
 	}
+	if opts.QueryReader != nil && strings.TrimSpace(opts.QueryToken) == "" {
+		return nil, errors.New("query token is required when query reader is configured")
+	}
 	return &Handler{opts: opts}, nil
 }
 
@@ -79,8 +85,14 @@ func (h *Handler) ServeFastHTTP(ctx *fasthttp.RequestCtx) {
 		h.writeTracker(ctx)
 	case ctx.IsOptions() && path == h.opts.CollectPath:
 		h.writePreflight(ctx)
+	case ctx.IsOptions() && (path == queryRealtimePath || path == queryEventsPath):
+		h.handleQueryPreflight(ctx)
 	case ctx.IsPost() && path == h.opts.CollectPath:
 		h.handleCollect(ctx)
+	case ctx.IsGet() && path == queryRealtimePath:
+		h.handleRealtime(ctx)
+	case ctx.IsGet() && path == queryEventsPath:
+		h.handleEvents(ctx)
 	default:
 		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
 	}

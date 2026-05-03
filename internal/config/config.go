@@ -61,6 +61,8 @@ type Config struct {
 	ControlPlaneTimeout               time.Duration               // ControlPlaneTimeout bounds each SaaS resolver request
 	ControlPlaneCacheTTL              time.Duration               // ControlPlaneCacheTTL caches resolved runtime source configs
 	ControlPlaneAllowInsecureLoopback bool                        // ControlPlaneAllowInsecureLoopback allows http loopback control-plane URLs in local development
+	QueryEnabled                      bool                        // QueryEnabled starts the internal Events and Realtime read API
+	QueryToken                        string                      // QueryToken authorizes internal Events and Realtime read requests
 	Sources                           []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
 
@@ -106,6 +108,8 @@ func LoadFromEnv() (Config, error) {
 		ControlPlaneTimeout:               envDuration("ANALYTICS_SERVICE_CONTROL_PLANE_TIMEOUT", 3*time.Second),
 		ControlPlaneCacheTTL:              envDuration("ANALYTICS_SERVICE_CONTROL_PLANE_CACHE_TTL", 5*time.Second),
 		ControlPlaneAllowInsecureLoopback: envBool("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK", false),
+		QueryEnabled:                      envBool("ANALYTICS_SERVICE_QUERY_ENABLED", false),
+		QueryToken:                        envString("ANALYTICS_SERVICE_QUERY_TOKEN", ""),
 	}
 
 	// Refuse a startup mode that would acknowledge /collect without a durable
@@ -128,6 +132,14 @@ func LoadFromEnv() (Config, error) {
 		}
 		if config.ControlPlaneToken == "" {
 			return Config{}, errors.New("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN is required when ANALYTICS_SERVICE_SOURCE_RESOLVER=http")
+		}
+	}
+	if config.QueryEnabled {
+		if config.QueryToken == "" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_QUERY_TOKEN is required when ANALYTICS_SERVICE_QUERY_ENABLED=true")
+		}
+		if config.ClickHouseAddr == "" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_CLICKHOUSE_ADDR is required when ANALYTICS_SERVICE_QUERY_ENABLED=true")
 		}
 	}
 	if config.IngestionEnabled {

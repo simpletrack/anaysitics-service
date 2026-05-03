@@ -47,6 +47,7 @@ type HTTPResolver struct {
 
 type cachedSourceConfig struct {
 	source    SourceConfig // source is the normalized runtime config returned to /collect
+	etag      string       // etag revalidates mutable runtime policy on subsequent lookups
 	expiresAt time.Time    // expiresAt is the exclusive cache deadline
 }
 
@@ -129,25 +130,36 @@ func (r *HTTPResolver) ResolveSource(ctx context.Context, writeKey string) (Sour
 	if writeKey == "" {
 		return SourceConfig{}, ErrSourceNotFound
 	}
-	if source, ok := r.cached(writeKey); ok {
+	if cached, ok := r.cached(writeKey); ok {
+		// Revalidate the cached runtime policy so disabled sources and rotated
+		// salts/origins take effect without waiting for the local TTL to expire.
+		source, etag, notModified, err := r.fetchSource(ctx, writeKey, cached.etag)
+		if err != nil {
+			return SourceConfig{}, err
+		}
+		if notModified {
+			r.store(writeKey, cached.source, cached.etag)
+			return cached.source, nil
+		}
+		r.store(writeKey, source, etag)
 		return source, nil
 	}
 
 	// Fetch from the SaaS control plane only after cache miss. Any transport or
 	// validation error fails closed and callers expose a stable 5xx response.
-	source, err := r.fetchSource(ctx, writeKey)
+	source, etag, _, err := r.fetchSource(ctx, writeKey, "")
 	if err != nil {
 		return SourceConfig{}, err
 	}
-	r.store(writeKey, source)
+	r.store(writeKey, source, etag)
 	return source, nil
 }
 
-func (r *HTTPResolver) cached(writeKey string) (SourceConfig, bool) {
+func (r *HTTPResolver) cached(writeKey string) (cachedSourceConfig, bool) {
 	// Cache lookups are intentionally success-only. Disabled or missing sources
 	// must be rechecked so SaaS-side write-key state changes can take effect.
 	if r.cacheTTL <= 0 {
-		return SourceConfig{}, false
+		return cachedSourceConfig{}, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -155,14 +167,15 @@ func (r *HTTPResolver) cached(writeKey string) (SourceConfig, bool) {
 	cached, ok := r.cache[writeKey]
 	if !ok || !r.now().Before(cached.expiresAt) {
 		delete(r.cache, writeKey)
-		return SourceConfig{}, false
+		return cachedSourceConfig{}, false
 	}
-	return cached.source, true
+	return cached, true
 }
 
-func (r *HTTPResolver) store(writeKey string, source SourceConfig) {
+func (r *HTTPResolver) store(writeKey string, source SourceConfig, etag string) {
 	// Store only normalized, validated source configs returned by fetchSource.
-	// Errors and disabled states are never cached by this resolver.
+	// Each hit is revalidated with the control plane so mutable auth state does
+	// not stay stale until the TTL expires.
 	if r.cacheTTL <= 0 {
 		return
 	}
@@ -170,31 +183,35 @@ func (r *HTTPResolver) store(writeKey string, source SourceConfig) {
 	defer r.mu.Unlock()
 	r.cache[writeKey] = cachedSourceConfig{
 		source:    source,
+		etag:      strings.TrimSpace(etag),
 		expiresAt: r.now().Add(r.cacheTTL),
 	}
 }
 
-func (r *HTTPResolver) fetchSource(ctx context.Context, writeKey string) (SourceConfig, error) {
+func (r *HTTPResolver) fetchSource(ctx context.Context, writeKey string, etag string) (SourceConfig, string, bool, error) {
 	// Send only the public write key to the control plane. Tenant, project,
 	// source, salts, and filtering rules come back from the trusted response.
 	body, err := json.Marshal(resolveSourceRequest{WriteKey: writeKey})
 	if err != nil {
-		return SourceConfig{}, err
+		return SourceConfig{}, "", false, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return SourceConfig{}, err
+		return SourceConfig{}, "", false, err
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+r.bearerToken)
+	if etag = strings.TrimSpace(etag); etag != "" {
+		request.Header.Set("If-None-Match", etag)
+	}
 
 	// Any transport failure leaves the request unresolved. The HTTP collect
 	// layer converts this to a stable 5xx response instead of accepting an event
 	// with unknown runtime configuration.
 	response, err := r.client.Do(request)
 	if err != nil {
-		return SourceConfig{}, err
+		return SourceConfig{}, "", false, err
 	}
 	defer response.Body.Close()
 
@@ -202,13 +219,19 @@ func (r *HTTPResolver) fetchSource(ctx context.Context, writeKey string) (Source
 	// exposing tenant, project, source, or write-key state.
 	switch response.StatusCode {
 	case http.StatusOK:
-		return decodeRuntimeSource(response.Body, writeKey)
+		source, err := decodeRuntimeSource(response.Body, writeKey)
+		if err != nil {
+			return SourceConfig{}, "", false, err
+		}
+		return source, strings.TrimSpace(response.Header.Get("ETag")), false, nil
+	case http.StatusNotModified:
+		return SourceConfig{}, strings.TrimSpace(response.Header.Get("ETag")), true, nil
 	case http.StatusNotFound:
-		return SourceConfig{}, ErrSourceNotFound
+		return SourceConfig{}, "", false, ErrSourceNotFound
 	case http.StatusForbidden, http.StatusGone:
-		return SourceConfig{}, ErrSourceDisabled
+		return SourceConfig{}, "", false, ErrSourceDisabled
 	default:
-		return SourceConfig{}, fmt.Errorf("control-plane resolver returned status %d", response.StatusCode)
+		return SourceConfig{}, "", false, fmt.Errorf("control-plane resolver returned status %d", response.StatusCode)
 	}
 }
 

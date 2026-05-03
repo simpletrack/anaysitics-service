@@ -73,10 +73,39 @@ development may use loopback HTTP only with
 
 The service sends only the write key to that endpoint and expects a runtime
 `SourceConfig` response. It still does not create sources, rotate write keys, or
-own domain/quota configuration. If same-process ingestion is enabled,
-`ANALYTICS_SERVICE_SOURCES_JSON` is still required as the startup schema surface
-for enabled sources, and HTTP-resolved sources outside that startup surface are
-rejected.
+own domain/quota configuration. Successful responses can be cached for the short
+TTL, but each cache hit is conditionally revalidated with `If-None-Match` when
+the SaaS endpoint returns an `ETag`; disabled sources, salt rotation, and origin
+changes therefore fail closed instead of waiting for stale local cache expiry.
+If same-process ingestion is enabled, `ANALYTICS_SERVICE_SOURCES_JSON` is still
+required as the startup schema surface for enabled sources, and HTTP-resolved
+sources outside that startup surface are rejected.
+
+When query mode is enabled, the service also exposes internal readback routes:
+
+- `GET /v1/realtime`
+- `GET /v1/events`
+
+These routes require an internal bearer token and use `X-SimpleTrack-Write-Key`
+or `write_key` to resolve the source boundary before calling
+`analytics-core/storage.EventReader`. Browser or SaaS-page callers can use
+`OPTIONS /v1/realtime` and `OPTIONS /v1/events` for CORS preflight; the actual
+GET request still requires the bearer token and source allowlist check.
+
+```powershell
+$env:ANALYTICS_SERVICE_QUERY_ENABLED='true'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN='query-service-token'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_ADDR='127.0.0.1:29000'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_DATABASE='analytics_core'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_USER='analytics_core'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD='analytics_core'
+
+Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/realtime?write_key=wk_local' `
+  -Headers @{ Authorization = "Bearer query-service-token" }
+
+Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z' `
+  -Headers @{ Authorization = "Bearer query-service-token" }
+```
 
 By default the service only accepts `/collect` and durably enqueues events to Redis.
 To run ingestion in the same process for local or small deployments, opt in:

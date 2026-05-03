@@ -11,6 +11,7 @@ import (
 
 	"github.com/simpletrack/analytics-core/contracts"
 	"github.com/simpletrack/analytics-core/eventbus"
+	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 	"github.com/valyala/fasthttp"
 )
@@ -158,6 +159,170 @@ func TestHealthRouteReturnsOK(t *testing.T) {
 	}
 }
 
+func TestRealtimeQueryReturnsRecords(t *testing.T) {
+	reader := &recordingQueryReader{
+		realtime: []storage.EventRecord{
+			{
+				ID:         "evt_recent",
+				TenantID:   "tenant_control",
+				ProjectID:  "project_control",
+				SourceID:   "source_control",
+				SourceType: "web",
+				EventName:  "page_view",
+				DistinctID: "visitor_1",
+				SessionID:  "session_1",
+				EventTime:  time.Date(2026, 5, 3, 9, 55, 0, 0, time.UTC),
+				ReceivedAt: time.Date(2026, 5, 3, 9, 55, 1, 0, time.UTC),
+				Properties: `{"path":"/"}`,
+				Source:     "browser",
+			},
+		},
+	}
+	handler := newTestQueryHandler(t, testSourceConfig(), reader)
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected realtime response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.realtimeQuery.TenantID != "tenant_control" || reader.realtimeQuery.ProjectID != "project_control" || reader.realtimeQuery.SourceID != "source_control" {
+		t.Fatalf("expected runtime source scope override, got %#v", reader.realtimeQuery)
+	}
+	expectedSince := time.Date(2026, 5, 3, 9, 30, 0, 0, time.UTC)
+	if !reader.realtimeQuery.Since.Equal(expectedSince) {
+		t.Fatalf("expected realtime default window since %s, got %s", expectedSince, reader.realtimeQuery.Since)
+	}
+	if reader.realtimeQuery.Limit != 50 {
+		t.Fatalf("expected realtime default limit 50, got %d", reader.realtimeQuery.Limit)
+	}
+
+	var response queryRealtimeResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode realtime response failed: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one realtime item, got %d", len(response.Items))
+	}
+	if got := string(response.Items[0].Properties); got != `{"path":"/"}` {
+		t.Fatalf("expected realtime properties JSON, got %s", got)
+	}
+}
+
+func TestEventsQueryReturnsRecords(t *testing.T) {
+	reader := &recordingQueryReader{
+		events: []storage.EventRecord{
+			{
+				ID:             "evt_custom",
+				TenantID:       "tenant_control",
+				ProjectID:      "project_control",
+				SourceID:       "source_control",
+				SourceType:     "web",
+				EventName:      "signup_clicked",
+				DistinctID:     "visitor_1",
+				SessionID:      "session_1",
+				EventTime:      time.Date(2026, 5, 3, 9, 20, 0, 0, time.UTC),
+				ReceivedAt:     time.Date(2026, 5, 3, 9, 20, 1, 0, time.UTC),
+				Properties:     `{"button":"hero"}`,
+				UserProperties: `{"plan":"free"}`,
+				Source:         "browser",
+			},
+		},
+	}
+	handler := newTestQueryHandler(t, testSourceConfig(), reader)
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&limit=25&offset=3&event_name=signup_clicked&distinct_id=visitor_1&sort_field=received_at&sort_direction=asc", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsQuery.EventName != "signup_clicked" || reader.eventsQuery.DistinctID != "visitor_1" {
+		t.Fatalf("expected request filters to reach analytics-core, got %#v", reader.eventsQuery)
+	}
+	if reader.eventsQuery.Limit != 25 || reader.eventsQuery.Offset != 3 {
+		t.Fatalf("expected paging values to reach analytics-core, got limit=%d offset=%d", reader.eventsQuery.Limit, reader.eventsQuery.Offset)
+	}
+	if reader.eventsQuery.SortField != storage.EventSortByReceivedAt || reader.eventsQuery.SortDirection != storage.EventSortAscending {
+		t.Fatalf("expected typed sort allowlist values, got %#v", reader.eventsQuery)
+	}
+
+	var response queryEventsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode events response failed: %v", err)
+	}
+	if response.From != "2026-05-03T09:00:00Z" || response.To != "2026-05-03T10:00:00Z" {
+		t.Fatalf("expected preserved time range, got %#v", response)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one events item, got %d", len(response.Items))
+	}
+	if got := string(response.Items[0].UserProperties); got != `{"plan":"free"}` {
+		t.Fatalf("expected user properties JSON, got %s", got)
+	}
+}
+
+func TestQueryRoutesRequireBearerToken(t *testing.T) {
+	resolver := &countingResolver{source: testSourceConfig()}
+	handler := newTestQueryHandlerWithResolver(t, resolver, &recordingQueryReader{})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Origin": "https://docs.example.com",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected unauthorized response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
+		t.Fatalf("expected unauthorized query response to include CORS, got %q", ctx.Response.Header.Peek("Access-Control-Allow-Origin"))
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("unauthorized query should not resolve source, got %d calls", resolver.calls)
+	}
+}
+
+func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
+	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+		"Origin":        "https://docs.example.com",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected bad-request response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
+		t.Fatalf("expected bad-request query response to include CORS, got %q", ctx.Response.Header.Peek("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestQueryPreflightReturnsCORSHeaders(t *testing.T) {
+	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
+
+	ctx := serve(handler, fasthttp.MethodOptions, "/v1/events?write_key=wk_live", "", map[string]string{
+		"Origin": "https://docs.example.com",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusNoContent {
+		t.Fatalf("expected no-content query preflight, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
+		t.Fatalf("expected reflected query CORS origin, got %q", ctx.Response.Header.Peek("Access-Control-Allow-Origin"))
+	}
+	if got := string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")); got != "GET, OPTIONS" {
+		t.Fatalf("expected query methods, got %q", got)
+	}
+	allowHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
+	for _, header := range []string{"Authorization", "X-SimpleTrack-Write-Key"} {
+		if !strings.Contains(allowHeaders, header) {
+			t.Fatalf("expected %s in query allow headers, got %q", header, allowHeaders)
+		}
+	}
+}
+
 func newTestHandler(t *testing.T, source controlplane.SourceConfig, trustForwarded bool) (fasthttp.RequestHandler, *recordingBus) {
 	t.Helper()
 
@@ -184,6 +349,39 @@ func newTestHandlerWithBus(t *testing.T, source controlplane.SourceConfig, trust
 		},
 		Resolver: resolver,
 		Bus:      bus,
+	})
+	if err != nil {
+		t.Fatalf("new handler failed: %v", err)
+	}
+	return handler.ServeFastHTTP
+}
+
+func newTestQueryHandler(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader) fasthttp.RequestHandler {
+	t.Helper()
+
+	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
+	if err != nil {
+		t.Fatalf("new memory resolver failed: %v", err)
+	}
+	return newTestQueryHandlerWithResolver(t, resolver, reader)
+}
+
+func newTestQueryHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader) fasthttp.RequestHandler {
+	t.Helper()
+
+	handler, err := NewHandler(Options{
+		CollectPath:           "/collect",
+		HealthPath:            "/healthz",
+		TrackerPath:           "/tracker.js",
+		TrustForwardedHeaders: false,
+		TrackerScript:         []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:    resolver,
+		Bus:         &recordingBus{},
+		QueryReader: reader,
+		QueryToken:  "query-token",
 	})
 	if err != nil {
 		t.Fatalf("new handler failed: %v", err)
@@ -271,4 +469,38 @@ func (b *recordingBus) Publish(_ context.Context, envelope contracts.EventEnvelo
 
 func (b *recordingBus) Subscribe(context.Context, eventbus.ConsumerGroup, eventbus.Handler) error {
 	return nil
+}
+
+type recordingQueryReader struct {
+	eventsQuery   storage.EventListQuery
+	realtimeQuery storage.RealtimeQuery
+	events        []storage.EventRecord
+	realtime      []storage.EventRecord
+	err           error
+}
+
+type countingResolver struct {
+	source controlplane.SourceConfig
+	calls  int
+}
+
+func (r *countingResolver) ResolveSource(_ context.Context, _ string) (controlplane.SourceConfig, error) {
+	r.calls++
+	return r.source, nil
+}
+
+func (r *recordingQueryReader) ListEvents(_ context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {
+	r.eventsQuery = query
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]storage.EventRecord(nil), r.events...), nil
+}
+
+func (r *recordingQueryReader) ListRealtime(_ context.Context, query storage.RealtimeQuery) ([]storage.EventRecord, error) {
+	r.realtimeQuery = query
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]storage.EventRecord(nil), r.realtime...), nil
 }

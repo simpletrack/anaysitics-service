@@ -75,6 +75,37 @@ func TestLoadFromEnvAcceptsClickHouseAutoMigrateFlag(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRequiresQueryTokenWhenQueryIsEnabled(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected enabled query mode without a token to fail")
+	}
+}
+
+func TestLoadFromEnvAcceptsQueryModeConfig(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "query-token")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected query mode config to load: %v", err)
+	}
+	if !cfg.QueryEnabled {
+		t.Fatalf("expected query mode to be enabled")
+	}
+	if cfg.QueryToken != "query-token" {
+		t.Fatalf("unexpected query token %q", cfg.QueryToken)
+	}
+}
+
 func TestLoadFromEnvAllowsHTTPSourceResolverWithoutStaticSources(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
 	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
