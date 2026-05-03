@@ -55,6 +55,29 @@ go run ./cmd/simpletrack-anaysitics-service
 come from the control plane or local runtime config and must not be derived from
 the public write key shown in a browser snippet.
 
+For production-shaped runtime config reads, switch source resolution to the SaaS
+control-plane HTTP endpoint:
+
+```powershell
+$env:ANALYTICS_SERVICE_SOURCE_RESOLVER='http'
+$env:ANALYTICS_SERVICE_CONTROL_PLANE_URL='https://saas.example.com/internal/analytics/runtime-source'
+$env:ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN='runtime-service-token'
+$env:ANALYTICS_SERVICE_CONTROL_PLANE_TIMEOUT='3s'
+$env:ANALYTICS_SERVICE_CONTROL_PLANE_CACHE_TTL='5s'
+```
+
+Control-plane URLs must use HTTPS by default because the request carries the
+runtime bearer token and the response carries server-only privacy salts. Local
+development may use loopback HTTP only with
+`ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK=true`.
+
+The service sends only the write key to that endpoint and expects a runtime
+`SourceConfig` response. It still does not create sources, rotate write keys, or
+own domain/quota configuration. If same-process ingestion is enabled,
+`ANALYTICS_SERVICE_SOURCES_JSON` is still required as the startup schema surface
+for enabled sources, and HTTP-resolved sources outside that startup surface are
+rejected.
+
 By default the service only accepts `/collect` and durably enqueues events to Redis.
 To run ingestion in the same process for local or small deployments, opt in:
 

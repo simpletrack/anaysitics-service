@@ -29,7 +29,7 @@ type Runtime struct {
 func New(cfg config.Config) (*Runtime, error) {
 	// Build the runtime-only view of SaaS source configuration. This resolver
 	// reads config but does not own any CRUD lifecycle.
-	resolver, err := controlplane.NewMemoryResolver(cfg.Sources)
+	resolver, err := newSourceResolver(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +171,37 @@ func closeAll(closers []io.Closer) error {
 		err = errors.Join(err, closers[idx].Close())
 	}
 	return err
+}
+
+func newSourceResolver(cfg config.Config) (controlplane.Resolver, error) {
+	// Resolver selection is a deployment boundary: memory mode is local/static,
+	// while http mode reads SaaS runtime config without taking over CRUD.
+	var resolver controlplane.Resolver
+	var err error
+	switch cfg.SourceResolver {
+	case "", "memory":
+		resolver, err = controlplane.NewMemoryResolver(cfg.Sources)
+	case "http":
+		resolver, err = controlplane.NewHTTPResolver(controlplane.HTTPResolverOptions{
+			Endpoint:              cfg.ControlPlaneURL,
+			BearerToken:           cfg.ControlPlaneToken,
+			Timeout:               cfg.ControlPlaneTimeout,
+			CacheTTL:              cfg.ControlPlaneCacheTTL,
+			AllowInsecureLoopback: cfg.ControlPlaneAllowInsecureLoopback,
+		})
+	default:
+		return nil, configError("unsupported source resolver")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cfg.IngestionEnabled && cfg.SourceResolver == "http" {
+		// Same-process ingestion validates ClickHouse tables only for the
+		// startup source list. Bind dynamic HTTP responses to that surface so
+		// collect cannot accept a source whose tables were never checked.
+		return controlplane.NewSchemaBoundResolver(resolver, cfg.Sources)
+	}
+	return resolver, nil
 }
 
 type configError string

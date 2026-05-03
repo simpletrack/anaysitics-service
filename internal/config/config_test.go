@@ -75,6 +75,50 @@ func TestLoadFromEnvAcceptsClickHouseAutoMigrateFlag(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAllowsHTTPSourceResolverWithoutStaticSources(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_SOURCE_RESOLVER", "http")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_URL", "https://control.example.com/runtime/source")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", "runtime-token")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected http source resolver config to load: %v", err)
+	}
+	if cfg.SourceResolver != "http" {
+		t.Fatalf("unexpected source resolver %q", cfg.SourceResolver)
+	}
+	if len(cfg.Sources) != 0 {
+		t.Fatalf("expected http resolver to avoid static source config, got %#v", cfg.Sources)
+	}
+}
+
+func TestLoadFromEnvAcceptsControlPlaneInsecureLoopbackFlag(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_SOURCE_RESOLVER", "http")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_URL", "http://127.0.0.1:8080/runtime-source")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", "runtime-token")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected http source resolver config to load: %v", err)
+	}
+	if !cfg.ControlPlaneAllowInsecureLoopback {
+		t.Fatalf("expected insecure loopback flag to be enabled")
+	}
+}
+
+func TestLoadFromEnvRejectsMemoryResolverWithoutSources(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_SOURCE_RESOLVER", "memory")
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected memory source resolver without static sources to fail")
+	}
+}
+
 func testSourcesJSON() string {
 	return `[{
 		"write_key":"wk",

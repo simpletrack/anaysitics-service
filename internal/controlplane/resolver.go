@@ -12,6 +12,9 @@ var ErrSourceNotFound = errors.New("analytics source not found")
 // ErrSourceDisabled reports a known source that is currently disabled.
 var ErrSourceDisabled = errors.New("analytics source is disabled")
 
+// ErrSourceOutsideSchemaSurface reports a source not present in the boot-time schema surface.
+var ErrSourceOutsideSchemaSurface = errors.New("analytics source is outside ingestion schema surface")
+
 // SourceConfig is the runtime-only view of a SimpleTrack analytics source.
 //
 // The SaaS control plane owns the lifecycle of these values. The analytics
@@ -80,6 +83,66 @@ type MemoryResolver struct {
 	sources map[string]SourceConfig // sources stores normalized configs by write key
 }
 
+// SchemaBoundResolver rejects resolved sources outside a boot-time schema surface.
+//
+// It is used when the runtime service resolves source config through a dynamic
+// control-plane API while same-process ingestion still validates ClickHouse
+// routed tables at startup. The wrapper prevents collect from accepting a source
+// that was never part of startup schema validation.
+type SchemaBoundResolver struct {
+	inner Resolver                      // inner resolves runtime source config from memory or HTTP
+	allow map[schemaSurfaceKey]struct{} // allow records enabled sources validated at service startup
+}
+
+type schemaSurfaceKey struct {
+	writeKey   string // writeKey ties the public runtime key to the schema surface
+	tenantID   string // tenantID is the analytics-core tenant boundary
+	projectID  string // projectID is the analytics-core project boundary
+	sourceID   string // sourceID is the analytics-core source boundary
+	sourceType string // sourceType prevents routing a different source family through this schema
+}
+
+// NewSchemaBoundResolver wraps resolver with boot-time source schema checks.
+func NewSchemaBoundResolver(resolver Resolver, sources []SourceConfig) (*SchemaBoundResolver, error) {
+	if resolver == nil {
+		return nil, errors.New("control-plane resolver is required")
+	}
+	allow := make(map[schemaSurfaceKey]struct{}, len(sources))
+	for _, source := range sources {
+		// Only enabled sources get routed ClickHouse tables at startup; disabled
+		// entries must not accidentally authorize collect-time writes.
+		source = source.Normalize()
+		if !source.Enabled {
+			continue
+		}
+		if err := validateSourceConfig(source); err != nil {
+			return nil, err
+		}
+		allow[newSchemaSurfaceKey(source)] = struct{}{}
+	}
+	return &SchemaBoundResolver{inner: resolver, allow: allow}, nil
+}
+
+// ResolveSource returns a source only when it was present at startup.
+func (r *SchemaBoundResolver) ResolveSource(ctx context.Context, writeKey string) (SourceConfig, error) {
+	if r == nil {
+		return SourceConfig{}, errors.New("control-plane resolver is required")
+	}
+
+	// Resolve first so the control plane remains authoritative for enabled
+	// state, salts, domain rules, and source identity; then gate the answer
+	// against startup schema validation before /collect can publish.
+	source, err := r.inner.ResolveSource(ctx, writeKey)
+	if err != nil {
+		return SourceConfig{}, err
+	}
+	source = source.Normalize()
+	if _, ok := r.allow[newSchemaSurfaceKey(source)]; !ok {
+		return SourceConfig{}, ErrSourceOutsideSchemaSurface
+	}
+	return source, nil
+}
+
 // NewMemoryResolver creates a resolver from static source configs.
 func NewMemoryResolver(sources []SourceConfig) (*MemoryResolver, error) {
 	index := make(map[string]SourceConfig, len(sources))
@@ -87,23 +150,8 @@ func NewMemoryResolver(sources []SourceConfig) (*MemoryResolver, error) {
 		// Normalize first so validation and duplicate checks use the same write
 		// key that runtime collect requests will resolve.
 		source = source.Normalize()
-		if source.WriteKey == "" {
-			return nil, errors.New("source write key is required")
-		}
-		if source.TenantID == "" {
-			return nil, errors.New("source tenant id is required")
-		}
-		if source.ProjectID == "" {
-			return nil, errors.New("source project id is required")
-		}
-		if source.SourceID == "" {
-			return nil, errors.New("source id is required")
-		}
-		if source.SessionSalt == "" {
-			return nil, errors.New("source session salt is required")
-		}
-		if source.ClientHashSalt == "" {
-			return nil, errors.New("source client hash salt is required")
+		if err := validateSourceConfig(source); err != nil {
+			return nil, err
 		}
 		if _, exists := index[source.WriteKey]; exists {
 			return nil, errors.New("source write key must be unique")
@@ -146,4 +194,38 @@ func normalizeStringList(values []string) []string {
 		}
 	}
 	return out
+}
+
+func newSchemaSurfaceKey(source SourceConfig) schemaSurfaceKey {
+	return schemaSurfaceKey{
+		writeKey:   source.WriteKey,
+		tenantID:   source.TenantID,
+		projectID:  source.ProjectID,
+		sourceID:   source.SourceID,
+		sourceType: source.SourceType,
+	}
+}
+
+func validateSourceConfig(source SourceConfig) error {
+	// Validate the privacy and routing fields required before a source can be
+	// indexed, cached, or used for collect-time trust-boundary overrides.
+	if source.WriteKey == "" {
+		return errors.New("source write key is required")
+	}
+	if source.TenantID == "" {
+		return errors.New("source tenant id is required")
+	}
+	if source.ProjectID == "" {
+		return errors.New("source project id is required")
+	}
+	if source.SourceID == "" {
+		return errors.New("source id is required")
+	}
+	if source.SessionSalt == "" {
+		return errors.New("source session salt is required")
+	}
+	if source.ClientHashSalt == "" {
+		return errors.New("source client hash salt is required")
+	}
+	return nil
 }
