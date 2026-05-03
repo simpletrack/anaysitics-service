@@ -17,7 +17,7 @@ var ErrSourceDisabled = errors.New("analytics source is disabled")
 // The SaaS control plane owns the lifecycle of these values. The analytics
 // service only reads them to enforce runtime collection rules.
 type SourceConfig struct {
-	WriteKey                 string   `json:"write_key"`                  // WriteKey is the secret key accepted by /collect
+	WriteKey                 string   `json:"write_key"`                  // WriteKey is the public runtime key accepted by /collect
 	Enabled                  bool     `json:"enabled"`                    // Enabled controls whether the source may accept runtime events
 	TenantID                 string   `json:"tenant_id"`                  // TenantID maps the workspace boundary into analytics-core
 	ProjectID                string   `json:"project_id"`                 // ProjectID maps the site or project boundary into analytics-core
@@ -43,12 +43,6 @@ func (c SourceConfig) Normalize() SourceConfig {
 	c.ClientHashSalt = strings.TrimSpace(c.ClientHashSalt)
 	if c.SourceType == "" {
 		c.SourceType = "web"
-	}
-	if c.SessionSalt == "" {
-		c.SessionSalt = "session:" + c.WriteKey
-	}
-	if c.ClientHashSalt == "" {
-		c.ClientHashSalt = "client:" + c.WriteKey
 	}
 	c.AllowedOrigins = normalizeStringList(c.AllowedOrigins)
 	c.BotUserAgents = normalizeStringList(c.BotUserAgents)
@@ -104,6 +98,12 @@ func NewMemoryResolver(sources []SourceConfig) (*MemoryResolver, error) {
 		}
 		if source.SourceID == "" {
 			return nil, errors.New("source id is required")
+		}
+		if source.SessionSalt == "" {
+			return nil, errors.New("source session salt is required")
+		}
+		if source.ClientHashSalt == "" {
+			return nil, errors.New("source client hash salt is required")
 		}
 		if _, exists := index[source.WriteKey]; exists {
 			return nil, errors.New("source write key must be unique")

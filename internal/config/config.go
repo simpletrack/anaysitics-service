@@ -20,6 +20,8 @@ const (
 	defaultEventBus    = "redis"
 	defaultRedisStream = "analytics.events"
 	defaultDeadLetters = "analytics.events.dead"
+	defaultWorkerGroup = "simpletrack-anaysistics-service"
+	defaultTablePrefix = "events"
 )
 
 // Config contains process-level runtime settings.
@@ -40,6 +42,17 @@ type Config struct {
 	RedisBlock            time.Duration               // RedisBlock is the blocking read duration for future workers
 	RedisReadCount        int64                       // RedisReadCount is the maximum messages read per poll
 	RedisMaxAttempts      int                         // RedisMaxAttempts is the dead-letter threshold for future workers
+	IngestionEnabled      bool                        // IngestionEnabled starts the runtime Redis-to-storage worker
+	WorkerGroup           string                      // WorkerGroup is the Redis Stream consumer group for ingestion
+	WorkerConsumer        string                      // WorkerConsumer is the concrete consumer name for this process
+	MySQLDSN              string                      // MySQLDSN stores ingestion idempotency checkpoints
+	MySQLAutoMigrate      bool                        // MySQLAutoMigrate creates checkpoint tables at startup when enabled
+	ClickHouseAddr        string                      // ClickHouseAddr is the native ClickHouse endpoint for event writes
+	ClickHouseDatabase    string                      // ClickHouseDatabase is the ClickHouse database for analytics events
+	ClickHouseUser        string                      // ClickHouseUser authenticates the ClickHouse native connection
+	ClickHousePassword    string                      // ClickHousePassword authenticates the ClickHouse native connection
+	ClickHouseTablePrefix string                      // ClickHouseTablePrefix is the safe prefix for routed event tables
+	PropertyIndexing      bool                        // PropertyIndexing writes typed property rows after primary events
 	Sources               []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
 
@@ -67,6 +80,17 @@ func LoadFromEnv() (Config, error) {
 		RedisBlock:            envDuration("ANALYTICS_SERVICE_REDIS_BLOCK", time.Second),
 		RedisReadCount:        int64(envInt("ANALYTICS_SERVICE_REDIS_READ_COUNT", 10)),
 		RedisMaxAttempts:      envInt("ANALYTICS_SERVICE_REDIS_MAX_ATTEMPTS", 5),
+		IngestionEnabled:      envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
+		WorkerGroup:           envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
+		WorkerConsumer:        envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
+		MySQLDSN:              envString("ANALYTICS_SERVICE_MYSQL_DSN", ""),
+		MySQLAutoMigrate:      envBool("ANALYTICS_SERVICE_MYSQL_AUTO_MIGRATE", false),
+		ClickHouseAddr:        envString("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", ""),
+		ClickHouseDatabase:    envString("ANALYTICS_SERVICE_CLICKHOUSE_DATABASE", "default"),
+		ClickHouseUser:        envString("ANALYTICS_SERVICE_CLICKHOUSE_USER", "default"),
+		ClickHousePassword:    envString("ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD", ""),
+		ClickHouseTablePrefix: envString("ANALYTICS_SERVICE_CLICKHOUSE_TABLE_PREFIX", defaultTablePrefix),
+		PropertyIndexing:      envBool("ANALYTICS_SERVICE_PROPERTY_INDEXING", true),
 	}
 
 	// Refuse a startup mode that would acknowledge /collect without a durable
@@ -79,6 +103,23 @@ func LoadFromEnv() (Config, error) {
 	}
 	if config.EventBus != "redis" && config.EventBus != "direct" {
 		return Config{}, errors.New("ANALYTICS_SERVICE_EVENTBUS must be redis or direct")
+	}
+	if config.IngestionEnabled {
+		if config.EventBus != "redis" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_INGESTION_ENABLED requires ANALYTICS_SERVICE_EVENTBUS=redis")
+		}
+		if config.WorkerGroup == "" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_WORKER_GROUP is required when ingestion is enabled")
+		}
+		if config.WorkerConsumer == "" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_WORKER_CONSUMER is required when ingestion is enabled")
+		}
+		if config.MySQLDSN == "" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_MYSQL_DSN is required when ingestion is enabled")
+		}
+		if config.ClickHouseAddr == "" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_CLICKHOUSE_ADDR is required when ingestion is enabled")
+		}
 	}
 
 	// Decode the runtime control-plane view last. These source configs are
@@ -134,4 +175,12 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func defaultWorkerConsumer() string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		return "consumer-1"
+	}
+	return strings.ToLower(strings.ReplaceAll(hostname, " ", "-"))
 }

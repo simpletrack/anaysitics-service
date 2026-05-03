@@ -1,6 +1,6 @@
-# simpletrack-analytics-service
+# simpletrack-anaysistics-service
 
-`simpletrack-analytics-service` is the runtime analytics data-plane service for
+`simpletrack-anaysistics-service` is the runtime analytics data-plane service for
 SimpleTrack.
 
 It is intentionally separate from the SaaS control plane. The SaaS application
@@ -19,6 +19,7 @@ runtime view of that configuration, enforces it on hot-path requests, and calls
 - Override untrusted client-supplied tenant, project, source, and source type.
 - Enforce source enabled state and origin allowlists before analytics-core sees the event.
 - Apply analytics-core collect stages for bot filtering, internal traffic filtering, client enrichment, and session derivation.
+- Optionally run the Redis Stream ingestion worker that writes accepted events to ClickHouse through `analytics-core`.
 
 ## Non-Responsibilities
 
@@ -47,8 +48,32 @@ $env:ANALYTICS_SERVICE_SOURCES_JSON='[
     "include_client_fingerprint":true
   }
 ]'
-go run ./cmd/analytics-service
+go run ./cmd/simpletrack-anaysistics-service
 ```
+
+`session_salt` and `client_hash_salt` are server-only runtime secrets. They must
+come from the control plane or local runtime config and must not be derived from
+the public write key shown in a browser snippet.
+
+By default the service only accepts `/collect` and durably enqueues events to Redis.
+To run ingestion in the same process for local or small deployments, opt in:
+
+```powershell
+$env:ANALYTICS_SERVICE_INGESTION_ENABLED='true'
+$env:ANALYTICS_SERVICE_MYSQL_DSN='analytics_core:analytics_core@tcp(127.0.0.1:23306)/analytics_core?parseTime=true'
+$env:ANALYTICS_SERVICE_MYSQL_AUTO_MIGRATE='true'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_ADDR='127.0.0.1:29000'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_DATABASE='analytics_core'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_USER='analytics_core'
+$env:ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD='analytics_core'
+```
+
+ClickHouse event and property tables are still an explicit schema concern. When
+ingestion is enabled, startup checks that each enabled source already has its
+routed event table and, when property indexing is enabled, the matching property
+table. The runtime worker wires Redis Stream, MySQL checkpoint guards,
+ClickHouse native batch writers, and typed property indexing; it does not create
+per-source ClickHouse event tables yet.
 
 For a throwaway demo without Redis, opt into the non-durable in-memory queue:
 

@@ -2,20 +2,31 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/eventbus/redisstream"
+	"github.com/simpletrack/analytics-core/ingestion"
 	"github.com/simpletrack/analytics-service/internal/collectapi"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 	"github.com/valyala/fasthttp"
 )
 
-// NewHandler builds the fasthttp handler used by the service process.
-func NewHandler(cfg config.Config) (fasthttp.RequestHandler, error) {
+// Runtime owns the assembled analytics data-plane dependencies.
+type Runtime struct {
+	handler   fasthttp.RequestHandler // handler serves health, tracker, preflight, and collect routes
+	processor *ingestion.Processor    // processor consumes Redis Stream messages when ingestion is enabled
+	closers   []io.Closer             // closers release network clients opened by the runtime assembly
+	worker    chan error              // worker receives the optional ingestion worker terminal error
+}
+
+// New assembles the runtime without starting background workers.
+func New(cfg config.Config) (*Runtime, error) {
 	// Build the runtime-only view of SaaS source configuration. This resolver
 	// reads config but does not own any CRUD lifecycle.
 	resolver, err := controlplane.NewMemoryResolver(cfg.Sources)
@@ -25,15 +36,17 @@ func NewHandler(cfg config.Config) (fasthttp.RequestHandler, error) {
 
 	// Build the event bus before exposing HTTP routes. The default path is Redis
 	// Stream so accepted /collect responses correspond to durable enqueueing.
-	bus, err := newEventBus(cfg)
+	bus, busClosers, err := newEventBus(cfg)
 	if err != nil {
 		return nil, err
 	}
+	closers := append([]io.Closer{}, busClosers...)
 
 	// Load the tracker asset at startup so missing deployments fail closed
 	// instead of returning 404s for a configured public SDK route.
 	tracker, err := os.ReadFile(cfg.TrackerFile)
 	if err != nil {
+		_ = closeAll(closers)
 		return nil, err
 	}
 
@@ -49,23 +62,76 @@ func NewHandler(cfg config.Config) (fasthttp.RequestHandler, error) {
 		Bus:                   bus,
 	})
 	if err != nil {
+		_ = closeAll(closers)
 		return nil, err
 	}
-	return handler.ServeFastHTTP, nil
+
+	var processor *ingestion.Processor
+	if cfg.IngestionEnabled {
+		// Ingestion is an explicit runtime mode because it opens storage
+		// dependencies and turns accepted events into ClickHouse writes.
+		startupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		processor, closers, err = newIngestionProcessor(startupCtx, cfg, bus, closers)
+		if err != nil {
+			_ = closeAll(closers)
+			return nil, err
+		}
+	}
+
+	return &Runtime{
+		handler:   handler.ServeFastHTTP,
+		processor: processor,
+		closers:   closers,
+	}, nil
 }
 
-func newEventBus(cfg config.Config) (eventbus.EventBus, error) {
+// Handler returns the fasthttp handler owned by the runtime.
+func (r *Runtime) Handler() fasthttp.RequestHandler {
+	return r.handler
+}
+
+// Start launches optional background runtime workers.
+func (r *Runtime) Start(ctx context.Context) {
+	if r.processor == nil || r.worker != nil {
+		return
+	}
+	r.worker = make(chan error, 1)
+	go func() {
+		// Processor.Run returns context cancellation when the service is
+		// shutting down; callers decide whether that is expected.
+		r.worker <- r.processor.Run(ctx)
+	}()
+}
+
+// WorkerDone returns the optional ingestion worker terminal channel.
+func (r *Runtime) WorkerDone() <-chan error {
+	if r == nil {
+		return nil
+	}
+	return r.worker
+}
+
+// Close releases network resources opened during runtime assembly.
+func (r *Runtime) Close() error {
+	if r == nil {
+		return nil
+	}
+	return closeAll(r.closers)
+}
+
+func newEventBus(cfg config.Config) (eventbus.EventBus, []io.Closer, error) {
 	switch cfg.EventBus {
 	case "redis":
 		return newRedisBus(cfg)
 	case "direct":
-		return newMemoryBus(), nil
+		return newMemoryBus(), nil, nil
 	default:
-		return nil, configError("unsupported event bus")
+		return nil, nil, configError("unsupported event bus")
 	}
 }
 
-func newRedisBus(cfg config.Config) (eventbus.EventBus, error) {
+func newRedisBus(cfg config.Config) (eventbus.EventBus, []io.Closer, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,
@@ -78,16 +144,33 @@ func newRedisBus(cfg config.Config) (eventbus.EventBus, error) {
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
-		return nil, err
+		return nil, nil, err
 	}
 
-	return redisstream.New(client, redisstream.Options{
+	bus, err := redisstream.New(client, redisstream.Options{
 		Stream:           cfg.RedisStream,
 		Block:            cfg.RedisBlock,
 		Count:            cfg.RedisReadCount,
+		EnsureConsumer:   cfg.IngestionEnabled,
 		MaxAttempts:      cfg.RedisMaxAttempts,
 		DeadLetterStream: cfg.RedisDeadLetterStream,
 	})
+	if err != nil {
+		_ = client.Close()
+		return nil, nil, err
+	}
+	return bus, []io.Closer{client}, nil
+}
+
+func closeAll(closers []io.Closer) error {
+	var err error
+	for idx := len(closers) - 1; idx >= 0; idx-- {
+		if closers[idx] == nil {
+			continue
+		}
+		err = errors.Join(err, closers[idx].Close())
+	}
+	return err
 }
 
 type configError string
