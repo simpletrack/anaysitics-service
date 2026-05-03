@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 )
@@ -46,4 +47,38 @@ func TestNewSourceResolverBindsHTTPResolverToIngestionSchemaSurface(t *testing.T
 	if !errors.Is(err, controlplane.ErrSourceOutsideSchemaSurface) {
 		t.Fatalf("expected schema surface rejection, got %v", err)
 	}
+}
+
+func TestAllowedPropertySelectorsUseEnabledStartupSources(t *testing.T) {
+	enabled := testRuntimeSource()
+	enabled.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+		{Scope: "user", Name: "plan", ValueTypes: []string{"string"}},
+	}
+	disabled := testRuntimeSource()
+	disabled.WriteKey = "wk_disabled"
+	disabled.SourceID = "source_disabled"
+	disabled.Enabled = false
+	disabled.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "hidden", ValueTypes: []string{"string"}},
+	}
+
+	selectors := allowedPropertySelectors([]controlplane.SourceConfig{enabled, disabled})
+
+	if len(selectors) != 2 {
+		t.Fatalf("expected enabled source selectors only, got %#v", selectors)
+	}
+	assertHasSelector(t, selectors, storage.PropertySelector{Scope: storage.PropertyScopeEvent, Name: "button"})
+	assertHasSelector(t, selectors, storage.PropertySelector{Scope: storage.PropertyScopeUser, Name: "plan"})
+}
+
+func assertHasSelector(t *testing.T, selectors []storage.PropertySelector, want storage.PropertySelector) {
+	t.Helper()
+
+	for _, got := range selectors {
+		if got == want {
+			return
+		}
+	}
+	t.Fatalf("expected selector %#v in %#v", want, selectors)
 }

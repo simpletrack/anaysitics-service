@@ -3,6 +3,7 @@ package collectapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -14,12 +15,13 @@ import (
 )
 
 const (
-	queryRealtimePath       = "/v1/realtime"
-	queryEventsPath         = "/v1/events"
-	defaultRealtimeWindow   = 30 * time.Minute
-	defaultRealtimeQueryCap = 50
-	defaultEventsQueryCap   = 100
-	queryAllowHeaders       = "Content-Type, Authorization, X-SimpleTrack-Write-Key"
+	queryRealtimePath        = "/v1/realtime"
+	queryEventsPath          = "/v1/events"
+	defaultRealtimeWindow    = 30 * time.Minute
+	defaultRealtimeQueryCap  = 50
+	defaultEventsQueryCap    = 100
+	defaultPropertyFilterCap = 5
+	queryAllowHeaders        = "Content-Type, Authorization, X-SimpleTrack-Write-Key"
 )
 
 type querySourceResponse struct {
@@ -59,6 +61,14 @@ type queryRealtimeResponse struct {
 	Items  []queryEventResponse `json:"items"`
 	Since  string               `json:"since"`
 	Limit  int                  `json:"limit"`
+}
+
+type propertyFilterPayload struct {
+	Scope    string `json:"scope"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Operator string `json:"op"`
+	Value    any    `json:"value"`
 }
 
 func (h *Handler) handleRealtime(ctx *fasthttp.RequestCtx) {
@@ -156,21 +166,28 @@ func (h *Handler) handleEvents(ctx *fasthttp.RequestCtx) {
 		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
 	}
+	propertyFilters, err := parsePropertyFilters(ctx, source)
+	if err != nil {
+		h.writeQueryError(ctx, err)
+		return
+	}
 
 	// Let analytics-core own the allowlisted sort and filter semantics. The
 	// service only maps the public query string into the core request contract.
 	records, err := h.opts.QueryReader.ListEvents(ctx, storage.EventListQuery{
-		TenantID:      source.TenantID,
-		ProjectID:     source.ProjectID,
-		SourceID:      source.SourceID,
-		EventName:     strings.TrimSpace(string(ctx.QueryArgs().Peek("event_name"))),
-		DistinctID:    strings.TrimSpace(string(ctx.QueryArgs().Peek("distinct_id"))),
-		From:          from,
-		To:            to,
-		Limit:         limit,
-		Offset:        offset,
-		SortField:     storage.EventSortField(strings.TrimSpace(string(ctx.QueryArgs().Peek("sort_field")))),
-		SortDirection: storage.EventSortDirection(strings.TrimSpace(string(ctx.QueryArgs().Peek("sort_direction")))),
+		TenantID:                 source.TenantID,
+		ProjectID:                source.ProjectID,
+		SourceID:                 source.SourceID,
+		EventName:                strings.TrimSpace(string(ctx.QueryArgs().Peek("event_name"))),
+		DistinctID:               strings.TrimSpace(string(ctx.QueryArgs().Peek("distinct_id"))),
+		From:                     from,
+		To:                       to,
+		Limit:                    limit,
+		Offset:                   offset,
+		SortField:                storage.EventSortField(strings.TrimSpace(string(ctx.QueryArgs().Peek("sort_field")))),
+		SortDirection:            storage.EventSortDirection(strings.TrimSpace(string(ctx.QueryArgs().Peek("sort_direction")))),
+		PropertyFilters:          propertyFilters,
+		AllowedPropertySelectors: toPropertySelectors(source.AllowedPropertyFilters),
 	})
 	if err != nil {
 		h.writeQueryError(ctx, err)
@@ -195,9 +212,9 @@ func (h *Handler) handleQueryPreflight(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Query preflight mirrors collect preflight but uses GET instead of POST so
-	// browser or SaaS-page callers can authorize readback before the actual
-	// request carries a bearer token.
+	// Query preflight mirrors collect preflight but uses GET instead of POST.
+	// Production dashboards still keep readback server-side in simpletrack-saas
+	// so the internal query token is never exposed to browsers.
 	h.writeQueryCORS(ctx)
 	ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	ctx.Response.Header.Set("Access-Control-Allow-Headers", queryAllowHeaders)
@@ -316,6 +333,142 @@ func parseTimeValue(value string) (time.Time, error) {
 		return time.Time{}, errors.New("time must use RFC3339 or RFC3339Nano")
 	}
 	return parsed.UTC(), nil
+}
+
+func parsePropertyFilters(ctx *fasthttp.RequestCtx, source controlplane.SourceConfig) ([]storage.EventPropertyFilter, error) {
+	// Property filters are repeatable JSON query parameters. Keep the shape
+	// explicit so future UI filters do not invent ad hoc dynamic SQL fragments.
+	rawFilters := propertyFilterArgs(ctx)
+	if len(rawFilters) == 0 {
+		return nil, nil
+	}
+	if len(rawFilters) > defaultPropertyFilterCap {
+		return nil, invalidPropertyFilterError("too many property filters: %d > %d", len(rawFilters), defaultPropertyFilterCap)
+	}
+	filters := make([]storage.EventPropertyFilter, 0, len(rawFilters))
+	for idx, raw := range rawFilters {
+		// Parse and validate each filter independently so the public error can
+		// point at the failing filter index while never reaching EventReader.
+		filter, err := parsePropertyFilter(idx, raw, source)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, filter)
+	}
+	return filters, nil
+}
+
+func propertyFilterArgs(ctx *fasthttp.RequestCtx) [][]byte {
+	filters := make([][]byte, 0, 2)
+	ctx.QueryArgs().VisitAll(func(key []byte, value []byte) {
+		if string(key) != "property_filter" {
+			return
+		}
+		copied := append([]byte(nil), value...)
+		filters = append(filters, copied)
+	})
+	return filters
+}
+
+func parsePropertyFilter(idx int, raw []byte, source controlplane.SourceConfig) (storage.EventPropertyFilter, error) {
+	// Decode the URL-decoded JSON payload first. Query callers can repeat the
+	// parameter, but each value has one small schema with bound scalar values.
+	var payload propertyFilterPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return storage.EventPropertyFilter{}, invalidPropertyFilterError("property filter %d must be JSON", idx)
+	}
+	scope := strings.ToLower(strings.TrimSpace(payload.Scope))
+	name := strings.TrimSpace(payload.Name)
+	valueType := strings.ToLower(strings.TrimSpace(payload.Type))
+	operator := strings.ToLower(strings.TrimSpace(payload.Operator))
+	if operator == "" {
+		operator = string(storage.EventFilterEquals)
+	}
+	if scope == "" || name == "" || valueType == "" {
+		return storage.EventPropertyFilter{}, invalidPropertyFilterError("property filter %d scope, name, and type are required", idx)
+	}
+	if operator != string(storage.EventFilterEquals) && operator != string(storage.EventFilterNotEquals) {
+		return storage.EventPropertyFilter{}, invalidPropertyFilterError("property filter %d unsupported operator %q", idx, operator)
+	}
+
+	// Enforce the SaaS-owned runtime source whitelist before analytics-core
+	// builds any storage query. The ClickHouse builder receives the startup
+	// selector surface as a second fail-closed guard.
+	if !source.AllowsPropertyFilter(scope, name, valueType) {
+		return storage.EventPropertyFilter{}, invalidPropertyFilterError("property filter %d %s.%s %s is not allowlisted", idx, scope, name, valueType)
+	}
+
+	filter := storage.EventPropertyFilter{
+		Scope:     storage.PropertyScope(scope),
+		Name:      name,
+		ValueType: storage.PropertyValueType(valueType),
+		Operator:  storage.EventFilterOperator(operator),
+	}
+	if err := assignPropertyFilterValue(&filter, payload.Value); err != nil {
+		return storage.EventPropertyFilter{}, invalidPropertyFilterError("property filter %d %v", idx, err)
+	}
+	return filter, nil
+}
+
+func assignPropertyFilterValue(filter *storage.EventPropertyFilter, value any) error {
+	// Copy the JSON scalar into the typed analytics-core slot. Nested values and
+	// stringified numbers are rejected so query behavior matches collect-time
+	// typed property indexing.
+	switch filter.ValueType {
+	case storage.PropertyValueNull:
+		return nil
+	case storage.PropertyValueString:
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("string value must be a JSON string")
+		}
+		filter.StringValue = text
+	case storage.PropertyValueNumber:
+		number, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("number value must be a JSON number")
+		}
+		filter.NumberValue = number
+	case storage.PropertyValueBool:
+		boolean, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("bool value must be a JSON boolean")
+		}
+		filter.BoolValue = boolean
+	default:
+		return fmt.Errorf("unsupported property value type %q", filter.ValueType)
+	}
+	return nil
+}
+
+func invalidPropertyFilterError(format string, args ...any) error {
+	args = append([]any{storage.ErrInvalidEventQuery}, args...)
+	return fmt.Errorf("%w: "+format, args...)
+}
+
+func toPropertySelectors(filters []controlplane.AllowedPropertyFilter) []storage.PropertySelector {
+	if len(filters) == 0 {
+		return nil
+	}
+	selectors := make([]storage.PropertySelector, 0, len(filters))
+	seen := make(map[storage.PropertySelector]struct{}, len(filters))
+	for _, filter := range filters {
+		// Carry only the selector into analytics-core. The service has already
+		// checked value-type restrictions against the source runtime config.
+		selector := storage.PropertySelector{
+			Scope: storage.PropertyScope(strings.ToLower(strings.TrimSpace(filter.Scope))),
+			Name:  strings.TrimSpace(filter.Name),
+		}
+		if selector.Scope == "" || selector.Name == "" {
+			continue
+		}
+		if _, ok := seen[selector]; ok {
+			continue
+		}
+		seen[selector] = struct{}{}
+		selectors = append(selectors, selector)
+	}
+	return selectors
 }
 
 func toQuerySourceResponse(source controlplane.SourceConfig) querySourceResponse {

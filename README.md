@@ -43,6 +43,10 @@ $env:ANALYTICS_SERVICE_SOURCES_JSON='[
     "source_id":"source_web",
     "source_type":"web",
     "allowed_origins":["http://localhost:3000"],
+    "allowed_property_filters":[
+      {"scope":"event","name":"button","value_types":["string"]},
+      {"scope":"user","name":"plan","value_types":["string"]}
+    ],
     "session_salt":"local-session-salt",
     "client_hash_salt":"local-client-salt",
     "include_client_fingerprint":true
@@ -106,6 +110,17 @@ Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/realtime?write_key=
   -Headers @{ Authorization = "Bearer query-service-token" }
 
 Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z' `
+  -Headers @{ Authorization = "Bearer query-service-token" }
+```
+
+Events readback also accepts repeatable `property_filter` query parameters. Each
+value is URL-encoded JSON, and each selector must appear in the source's
+`allowed_property_filters` runtime config before the request reaches
+`analytics-core`:
+
+```powershell
+$filter = [uri]::EscapeDataString('{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}')
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z&property_filter=$filter" `
   -Headers @{ Authorization = "Bearer query-service-token" }
 ```
 

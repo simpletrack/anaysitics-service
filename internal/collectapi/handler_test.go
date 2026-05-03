@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -261,6 +262,63 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	if got := string(response.Items[0].UserProperties); got != `{"plan":"free"}` {
 		t.Fatalf("expected user properties JSON, got %s", got)
+	}
+}
+
+func TestEventsQueryMapsAllowlistedPropertyFilters(t *testing.T) {
+	source := testSourceConfig()
+	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+		{Scope: "user", Name: "score", ValueTypes: []string{"number"}},
+	}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandler(t, source, reader)
+	propertyFilter := url.QueryEscape(`{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}`)
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+propertyFilter, "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(reader.eventsQuery.PropertyFilters) != 1 {
+		t.Fatalf("expected one property filter, got %#v", reader.eventsQuery.PropertyFilters)
+	}
+	got := reader.eventsQuery.PropertyFilters[0]
+	if got.Scope != storage.PropertyScopeEvent || got.Name != "button" || got.ValueType != storage.PropertyValueString {
+		t.Fatalf("unexpected property filter selector %#v", got)
+	}
+	if got.Operator != storage.EventFilterEquals || got.StringValue != "hero" {
+		t.Fatalf("unexpected property filter predicate %#v", got)
+	}
+	if len(reader.eventsQuery.AllowedPropertySelectors) != 2 {
+		t.Fatalf("expected source property selector allowlist to reach analytics-core, got %#v", reader.eventsQuery.AllowedPropertySelectors)
+	}
+}
+
+func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
+	source := testSourceConfig()
+	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+	}
+	resolver := &countingResolver{source: source.Normalize()}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolver(t, resolver, reader)
+	propertyFilter := url.QueryEscape(`{"scope":"event","name":"plan","type":"string","op":"eq","value":"pro"}`)
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+propertyFilter, "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected bad request for unallowlisted property filter, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("expected source resolution before property whitelist check, got %d calls", resolver.calls)
+	}
+	if reader.eventsQuery.SourceID != "" {
+		t.Fatalf("unallowlisted property filter should not reach EventReader, got %#v", reader.eventsQuery)
 	}
 }
 

@@ -166,7 +166,8 @@ func newQueryReader(cfg config.Config) (storage.EventReader, []io.Closer, error)
 		_ = queryCloser.Close()
 		return nil, nil, err
 	}
-	builder, err := clickhouse.NewEventQueryBuilder(router)
+	builderOptions := queryBuilderOptions(cfg)
+	builder, err := clickhouse.NewEventQueryBuilder(router, builderOptions...)
 	if err != nil {
 		_ = queryCloser.Close()
 		return nil, nil, err
@@ -177,6 +178,42 @@ func newQueryReader(cfg config.Config) (storage.EventReader, []io.Closer, error)
 		return nil, nil, err
 	}
 	return reader, []io.Closer{queryCloser}, nil
+}
+
+func queryBuilderOptions(cfg config.Config) []clickhouse.EventQueryBuilderOption {
+	selectors := allowedPropertySelectors(cfg.Sources)
+	if len(selectors) == 0 {
+		return nil
+	}
+	return []clickhouse.EventQueryBuilderOption{
+		clickhouse.WithAllowedPropertyFilters(selectors...),
+	}
+}
+
+func allowedPropertySelectors(sources []controlplane.SourceConfig) []storage.PropertySelector {
+	selectors := make([]storage.PropertySelector, 0)
+	seen := make(map[storage.PropertySelector]struct{})
+	for _, source := range sources {
+		// Source config is the SaaS-owned query whitelist. The runtime only
+		// passes the selector surface to analytics-core for query-builder
+		// enforcement; value-type checks stay source-scoped in the HTTP layer.
+		source = source.Normalize()
+		if !source.Enabled {
+			continue
+		}
+		for _, filter := range source.AllowedPropertyFilters {
+			selector := storage.PropertySelector{
+				Scope: storage.PropertyScope(filter.Scope),
+				Name:  filter.Name,
+			}
+			if _, ok := seen[selector]; ok {
+				continue
+			}
+			seen[selector] = struct{}{}
+			selectors = append(selectors, selector)
+		}
+	}
+	return selectors
 }
 
 func openClickHouseQuery(ctx context.Context, cfg config.Config) (*gorm.DB, io.Closer, error) {

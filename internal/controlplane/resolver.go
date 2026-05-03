@@ -20,19 +20,27 @@ var ErrSourceOutsideSchemaSurface = errors.New("analytics source is outside inge
 // The SaaS control plane owns the lifecycle of these values. The analytics
 // service only reads them to enforce runtime collection rules.
 type SourceConfig struct {
-	WriteKey                 string   `json:"write_key"`                  // WriteKey is the public runtime key accepted by /collect
-	Enabled                  bool     `json:"enabled"`                    // Enabled controls whether the source may accept runtime events
-	TenantID                 string   `json:"tenant_id"`                  // TenantID maps the workspace boundary into analytics-core
-	ProjectID                string   `json:"project_id"`                 // ProjectID maps the site or project boundary into analytics-core
-	SourceID                 string   `json:"source_id"`                  // SourceID identifies the concrete event source inside the project
-	SourceType               string   `json:"source_type"`                // SourceType is the analytics-core source category, usually web
-	AllowedOrigins           []string `json:"allowed_origins"`            // AllowedOrigins are browser origins allowed to send events for this source
-	BotUserAgents            []string `json:"bot_user_agents"`            // BotUserAgents override analytics-core default bot user-agent tokens
-	InternalCIDRs            []string `json:"internal_cidrs"`             // InternalCIDRs are runtime network ranges filtered before publishing
-	InternalIPs              []string `json:"internal_ips"`               // InternalIPs are exact runtime client addresses filtered before publishing
-	SessionSalt              string   `json:"session_salt"`               // SessionSalt namespaces derived session ids
-	ClientHashSalt           string   `json:"client_hash_salt"`           // ClientHashSalt namespaces derived client IP hashes
-	IncludeClientFingerprint bool     `json:"include_client_fingerprint"` // IncludeClientFingerprint adds transient client data to derived sessions
+	WriteKey                 string                  `json:"write_key"`                  // WriteKey is the public runtime key accepted by /collect
+	Enabled                  bool                    `json:"enabled"`                    // Enabled controls whether the source may accept runtime events
+	TenantID                 string                  `json:"tenant_id"`                  // TenantID maps the workspace boundary into analytics-core
+	ProjectID                string                  `json:"project_id"`                 // ProjectID maps the site or project boundary into analytics-core
+	SourceID                 string                  `json:"source_id"`                  // SourceID identifies the concrete event source inside the project
+	SourceType               string                  `json:"source_type"`                // SourceType is the analytics-core source category, usually web
+	AllowedOrigins           []string                `json:"allowed_origins"`            // AllowedOrigins are browser origins allowed to send events for this source
+	AllowedPropertyFilters   []AllowedPropertyFilter `json:"allowed_property_filters"`   // AllowedPropertyFilters are source-scoped typed property query selectors
+	BotUserAgents            []string                `json:"bot_user_agents"`            // BotUserAgents override analytics-core default bot user-agent tokens
+	InternalCIDRs            []string                `json:"internal_cidrs"`             // InternalCIDRs are runtime network ranges filtered before publishing
+	InternalIPs              []string                `json:"internal_ips"`               // InternalIPs are exact runtime client addresses filtered before publishing
+	SessionSalt              string                  `json:"session_salt"`               // SessionSalt namespaces derived session ids
+	ClientHashSalt           string                  `json:"client_hash_salt"`           // ClientHashSalt namespaces derived client IP hashes
+	IncludeClientFingerprint bool                    `json:"include_client_fingerprint"` // IncludeClientFingerprint adds transient client data to derived sessions
+}
+
+// AllowedPropertyFilter describes one source-scoped property selector allowed in Events readback.
+type AllowedPropertyFilter struct {
+	Scope      string   `json:"scope"`       // Scope is event or user
+	Name       string   `json:"name"`        // Name is the normalized property key allowed for filtering
+	ValueTypes []string `json:"value_types"` // ValueTypes optionally restrict the allowed typed property slots
 }
 
 // Normalize returns a copy with stable defaults and trimmed string fields.
@@ -48,6 +56,7 @@ func (c SourceConfig) Normalize() SourceConfig {
 		c.SourceType = "web"
 	}
 	c.AllowedOrigins = normalizeStringList(c.AllowedOrigins)
+	c.AllowedPropertyFilters = normalizeAllowedPropertyFilters(c.AllowedPropertyFilters)
 	c.BotUserAgents = normalizeStringList(c.BotUserAgents)
 	c.InternalCIDRs = normalizeStringList(c.InternalCIDRs)
 	c.InternalIPs = normalizeStringList(c.InternalIPs)
@@ -63,6 +72,36 @@ func (c SourceConfig) AllowsOrigin(origin string) bool {
 	for _, allowed := range c.AllowedOrigins {
 		if allowed == "*" || strings.EqualFold(allowed, origin) {
 			return true
+		}
+	}
+	return false
+}
+
+// AllowsPropertyFilter reports whether a typed property predicate is permitted for this source.
+func (c SourceConfig) AllowsPropertyFilter(scope string, name string, valueType string) bool {
+	// Normalize request-side strings exactly like source config normalization so
+	// callers cannot bypass the allowlist with whitespace or case drift.
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	name = strings.TrimSpace(name)
+	valueType = strings.ToLower(strings.TrimSpace(valueType))
+	if scope == "" || name == "" || valueType == "" {
+		return false
+	}
+
+	// Match by source-owned selector first, then optionally restrict the typed
+	// value slot. An empty ValueTypes list means any scalar property type is
+	// allowed for that selector.
+	for _, filter := range c.AllowedPropertyFilters {
+		if filter.Scope != scope || filter.Name != name {
+			continue
+		}
+		if len(filter.ValueTypes) == 0 {
+			return true
+		}
+		for _, allowed := range filter.ValueTypes {
+			if allowed == valueType {
+				return true
+			}
 		}
 	}
 	return false
@@ -196,6 +235,36 @@ func normalizeStringList(values []string) []string {
 	return out
 }
 
+func normalizeAllowedPropertyFilters(values []AllowedPropertyFilter) []AllowedPropertyFilter {
+	out := make([]AllowedPropertyFilter, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		// Normalize selector shape but keep validation separate so startup can
+		// report unsupported scopes or value types as configuration errors.
+		value.Scope = strings.ToLower(strings.TrimSpace(value.Scope))
+		value.Name = strings.TrimSpace(value.Name)
+		value.ValueTypes = normalizeLowerStringList(value.ValueTypes)
+		if value.Scope == "" || value.Name == "" {
+			continue
+		}
+		key := value.Scope + "\x00" + value.Name + "\x00" + strings.Join(value.ValueTypes, ",")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeLowerStringList(values []string) []string {
+	out := normalizeStringList(values)
+	for idx := range out {
+		out[idx] = strings.ToLower(out[idx])
+	}
+	return out
+}
+
 func newSchemaSurfaceKey(source SourceConfig) schemaSurfaceKey {
 	return schemaSurfaceKey{
 		writeKey:   source.WriteKey,
@@ -226,6 +295,25 @@ func validateSourceConfig(source SourceConfig) error {
 	}
 	if source.ClientHashSalt == "" {
 		return errors.New("source client hash salt is required")
+	}
+	if err := validateAllowedPropertyFilters(source.AllowedPropertyFilters); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAllowedPropertyFilters(filters []AllowedPropertyFilter) error {
+	for _, filter := range filters {
+		if filter.Scope != "event" && filter.Scope != "user" {
+			return errors.New("source property filter scope must be event or user")
+		}
+		for _, valueType := range filter.ValueTypes {
+			switch valueType {
+			case "null", "string", "number", "bool":
+			default:
+				return errors.New("source property filter value type must be null, string, number, or bool")
+			}
+		}
 	}
 	return nil
 }
