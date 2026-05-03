@@ -75,6 +75,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		Bus:                   bus,
 		QueryReader:           queryReader,
 		QueryToken:            cfg.QueryToken,
+		QueryTokens:           cfg.QueryTokens,
 	})
 	if err != nil {
 		_ = closeAll(closers)

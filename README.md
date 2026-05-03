@@ -88,9 +88,11 @@ When query mode is enabled, the service also exposes internal readback routes:
 
 These routes require an internal bearer token and use `X-SimpleTrack-Write-Key`
 or `write_key` to resolve the source boundary before calling
-`analytics-core/storage.EventReader`. Browser or SaaS-page callers can use
-`OPTIONS /v1/realtime` and `OPTIONS /v1/events` for CORS preflight; the actual
-GET request still requires the bearer token and source allowlist check.
+`analytics-core/storage.EventReader`. Production dashboard readback should stay
+server-side in `simpletrack-saas` so the internal bearer token never reaches the
+browser. `OPTIONS /v1/realtime` and `OPTIONS /v1/events` exist for protocol
+completeness and trusted service/browser-shell integrations, but the actual GET
+request still requires the bearer token and source allowlist check.
 
 ```powershell
 $env:ANALYTICS_SERVICE_QUERY_ENABLED='true'
@@ -106,6 +108,21 @@ Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/realtime?write_key=
 Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z' `
   -Headers @{ Authorization = "Bearer query-service-token" }
 ```
+
+For query token rotation, keep `ANALYTICS_SERVICE_QUERY_TOKEN` as the current
+token and temporarily add the previous token to
+`ANALYTICS_SERVICE_QUERY_TOKENS_JSON`:
+
+```powershell
+$env:ANALYTICS_SERVICE_QUERY_TOKEN='query-service-token-v2'
+$env:ANALYTICS_SERVICE_QUERY_TOKENS_JSON='["query-service-token-v1"]'
+```
+
+Rotation should be short-lived: deploy the service accepting both tokens,
+switch `simpletrack-saas` to the new token, then remove the old token from the
+JSON allowlist once all callers have moved. This service only enforces accepted
+runtime tokens; token creation, storage, and operator workflow remain owned by
+deployment and the SaaS control-plane environment.
 
 By default the service only accepts `/collect` and durably enqueues events to Redis.
 To run ingestion in the same process for local or small deployments, opt in:

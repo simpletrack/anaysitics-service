@@ -206,11 +206,15 @@ func (h *Handler) handleQueryPreflight(ctx *fasthttp.RequestCtx) {
 }
 
 func (h *Handler) requireQueryToken(ctx *fasthttp.RequestCtx) bool {
-	if strings.TrimSpace(h.opts.QueryToken) == "" {
+	// A missing accepted-token list means the internal read API was not safely
+	// configured, so hide the route shape instead of returning auth details.
+	if len(h.opts.QueryTokens) == 0 {
 		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
 		return false
 	}
-	if bearerToken(string(ctx.Request.Header.Peek("Authorization"))) != h.opts.QueryToken {
+	// Accept any configured rotation token while keeping source resolution and
+	// query execution behind successful internal authentication.
+	if !queryTokenAllowed(bearerToken(string(ctx.Request.Header.Peek("Authorization"))), h.opts.QueryTokens) {
 		h.writeJSON(ctx, fasthttp.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
 		return false
 	}

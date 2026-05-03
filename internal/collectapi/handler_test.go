@@ -283,6 +283,42 @@ func TestQueryRoutesRequireBearerToken(t *testing.T) {
 	}
 }
 
+func TestQueryRoutesAcceptRotatedBearerToken(t *testing.T) {
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithTokens(t, testSourceConfig(), reader, []string{"current-token", "previous-token"})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer previous-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected rotated query token to be accepted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.realtimeQuery.SourceID != "source_control" {
+		t.Fatalf("expected rotated token request to reach EventReader, got %#v", reader.realtimeQuery)
+	}
+}
+
+func TestQueryRoutesRejectUnknownBearerDuringRotation(t *testing.T) {
+	resolver := &countingResolver{source: testSourceConfig()}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndTokens(t, resolver, reader, []string{"current-token", "previous-token"})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer wrong-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected unauthorized response for unknown rotated token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("unknown query token should not resolve source, got %d calls", resolver.calls)
+	}
+	if reader.realtimeQuery.SourceID != "" {
+		t.Fatalf("unknown query token should not reach EventReader, got %#v", reader.realtimeQuery)
+	}
+}
+
 func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
 	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
 
@@ -369,6 +405,31 @@ func newTestQueryHandler(t *testing.T, source controlplane.SourceConfig, reader 
 func newTestQueryHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader) fasthttp.RequestHandler {
 	t.Helper()
 
+	return newTestQueryHandlerWithResolverAndTokens(t, resolver, reader, []string{"query-token"})
+}
+
+func newTestQueryHandlerWithTokens(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader, tokens []string) fasthttp.RequestHandler {
+	t.Helper()
+
+	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
+	if err != nil {
+		t.Fatalf("new memory resolver failed: %v", err)
+	}
+	return newTestQueryHandlerWithResolverAndTokens(t, resolver, reader, tokens)
+}
+
+func newTestQueryHandlerWithResolverAndTokens(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader, tokens []string) fasthttp.RequestHandler {
+	t.Helper()
+
+	queryToken := ""
+	if len(tokens) > 0 {
+		queryToken = tokens[0]
+	}
+	queryTokens := []string(nil)
+	if len(tokens) > 1 {
+		queryTokens = tokens[1:]
+	}
+
 	handler, err := NewHandler(Options{
 		CollectPath:           "/collect",
 		HealthPath:            "/healthz",
@@ -381,7 +442,8 @@ func newTestQueryHandlerWithResolver(t *testing.T, resolver controlplane.Resolve
 		Resolver:    resolver,
 		Bus:         &recordingBus{},
 		QueryReader: reader,
-		QueryToken:  "query-token",
+		QueryToken:  queryToken,
+		QueryTokens: queryTokens,
 	})
 	if err != nil {
 		t.Fatalf("new handler failed: %v", err)

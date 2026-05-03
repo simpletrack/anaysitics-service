@@ -63,6 +63,7 @@ type Config struct {
 	ControlPlaneAllowInsecureLoopback bool                        // ControlPlaneAllowInsecureLoopback allows http loopback control-plane URLs in local development
 	QueryEnabled                      bool                        // QueryEnabled starts the internal Events and Realtime read API
 	QueryToken                        string                      // QueryToken authorizes internal Events and Realtime read requests
+	QueryTokens                       []string                    // QueryTokens are accepted internal read tokens during rotation windows
 	Sources                           []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
 
@@ -111,6 +112,11 @@ func LoadFromEnv() (Config, error) {
 		QueryEnabled:                      envBool("ANALYTICS_SERVICE_QUERY_ENABLED", false),
 		QueryToken:                        envString("ANALYTICS_SERVICE_QUERY_TOKEN", ""),
 	}
+	queryTokens, err := queryTokensFromEnv(config.QueryToken)
+	if err != nil {
+		return Config{}, err
+	}
+	config.QueryTokens = queryTokens
 
 	// Refuse a startup mode that would acknowledge /collect without a durable
 	// enqueue path. Local in-memory mode must be explicit in the environment.
@@ -135,8 +141,8 @@ func LoadFromEnv() (Config, error) {
 		}
 	}
 	if config.QueryEnabled {
-		if config.QueryToken == "" {
-			return Config{}, errors.New("ANALYTICS_SERVICE_QUERY_TOKEN is required when ANALYTICS_SERVICE_QUERY_ENABLED=true")
+		if len(config.QueryTokens) == 0 {
+			return Config{}, errors.New("ANALYTICS_SERVICE_QUERY_TOKEN or ANALYTICS_SERVICE_QUERY_TOKENS_JSON is required when ANALYTICS_SERVICE_QUERY_ENABLED=true")
 		}
 		if config.ClickHouseAddr == "" {
 			return Config{}, errors.New("ANALYTICS_SERVICE_CLICKHOUSE_ADDR is required when ANALYTICS_SERVICE_QUERY_ENABLED=true")
@@ -183,6 +189,38 @@ func envString(name string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func queryTokensFromEnv(primary string) ([]string, error) {
+	// Keep the existing single-token variable as the default deploy path, then
+	// merge in an optional JSON allowlist for zero-downtime query token rotation.
+	tokens := make([]string, 0, 2)
+	seen := make(map[string]struct{})
+	appendToken := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		tokens = append(tokens, value)
+	}
+	appendToken(primary)
+
+	raw := strings.TrimSpace(os.Getenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON"))
+	if raw == "" {
+		return tokens, nil
+	}
+	var rotated []string
+	if err := json.Unmarshal([]byte(raw), &rotated); err != nil {
+		return nil, err
+	}
+	for _, token := range rotated {
+		appendToken(token)
+	}
+	return tokens, nil
 }
 
 func envBool(name string, fallback bool) bool {

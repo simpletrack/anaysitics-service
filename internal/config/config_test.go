@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestLoadFromEnvRequiresRedisAddressByDefault(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
@@ -103,6 +106,27 @@ func TestLoadFromEnvAcceptsQueryModeConfig(t *testing.T) {
 	}
 	if cfg.QueryToken != "query-token" {
 		t.Fatalf("unexpected query token %q", cfg.QueryToken)
+	}
+	if !slices.Equal(cfg.QueryTokens, []string{"query-token"}) {
+		t.Fatalf("unexpected accepted query tokens %#v", cfg.QueryTokens)
+	}
+}
+
+func TestLoadFromEnvAcceptsQueryTokenRotationAllowlist(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "current-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `["previous-token","current-token"," "]`)
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected query rotation config to load: %v", err)
+	}
+	if !slices.Equal(cfg.QueryTokens, []string{"current-token", "previous-token"}) {
+		t.Fatalf("unexpected accepted query tokens %#v", cfg.QueryTokens)
 	}
 }
 
