@@ -25,6 +25,14 @@ const (
 	defaultResolver    = "memory"
 )
 
+// QueryTokenCredential describes one internal readback bearer token and its lifecycle window.
+type QueryTokenCredential struct {
+	ID        string    // ID is a non-secret alias used in operator audit logs
+	Token     string    // Token is the bearer secret accepted by the internal read API
+	NotBefore time.Time // NotBefore optionally delays token activation until this instant
+	ExpiresAt time.Time // ExpiresAt optionally rejects the token at or after this instant
+}
+
 // Config contains process-level runtime settings.
 type Config struct {
 	Addr                              string                      // Addr is the fasthttp listen address
@@ -64,6 +72,7 @@ type Config struct {
 	QueryEnabled                      bool                        // QueryEnabled starts the internal Events and Realtime read API
 	QueryToken                        string                      // QueryToken authorizes internal Events and Realtime read requests
 	QueryTokens                       []string                    // QueryTokens are accepted internal read tokens during rotation windows
+	QueryCredentials                  []QueryTokenCredential      // QueryCredentials are accepted internal read tokens with activation and expiry metadata
 	Sources                           []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
 
@@ -112,11 +121,12 @@ func LoadFromEnv() (Config, error) {
 		QueryEnabled:                      envBool("ANALYTICS_SERVICE_QUERY_ENABLED", false),
 		QueryToken:                        envString("ANALYTICS_SERVICE_QUERY_TOKEN", ""),
 	}
-	queryTokens, err := queryTokensFromEnv(config.QueryToken)
+	queryCredentials, err := queryCredentialsFromEnv(config.QueryToken)
 	if err != nil {
 		return Config{}, err
 	}
-	config.QueryTokens = queryTokens
+	config.QueryCredentials = queryCredentials
+	config.QueryTokens = queryTokenValues(queryCredentials)
 
 	// Refuse a startup mode that would acknowledge /collect without a durable
 	// enqueue path. Local in-memory mode must be explicit in the environment.
@@ -191,36 +201,128 @@ func envString(name string, fallback string) string {
 	return value
 }
 
-func queryTokensFromEnv(primary string) ([]string, error) {
-	// Keep the existing single-token variable as the default deploy path, then
-	// merge in an optional JSON allowlist for zero-downtime query token rotation.
-	tokens := make([]string, 0, 2)
+func queryCredentialsFromEnv(primary string) ([]QueryTokenCredential, error) {
+	// Keep the single-token path as the default deployment shape, then merge in
+	// an optional JSON rotation list that can also carry activation/expiry
+	// metadata for bounded rollover windows.
+	credentials := make([]QueryTokenCredential, 0, 2)
 	seen := make(map[string]struct{})
-	appendToken := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
+	rotationIndex := 0
+	appendCredential := func(credential QueryTokenCredential, defaultID string) error {
+		credential.Token = strings.TrimSpace(credential.Token)
+		if credential.Token == "" {
+			return nil
 		}
-		if _, ok := seen[value]; ok {
-			return
+		credential.ID = strings.TrimSpace(credential.ID)
+		if credential.ID == "" {
+			credential.ID = defaultID
 		}
-		seen[value] = struct{}{}
-		tokens = append(tokens, value)
+		if !credential.NotBefore.IsZero() && !credential.ExpiresAt.IsZero() && !credential.NotBefore.Before(credential.ExpiresAt) {
+			return errors.New("query token not_before must be earlier than expires_at")
+		}
+		if _, ok := seen[credential.Token]; ok {
+			return nil
+		}
+		seen[credential.Token] = struct{}{}
+		credentials = append(credentials, credential)
+		return nil
 	}
-	appendToken(primary)
+
+	primaryCredential, err := primaryQueryCredentialFromEnv(primary)
+	if err != nil {
+		return nil, err
+	}
+	if err := appendCredential(primaryCredential, "current"); err != nil {
+		return nil, err
+	}
 
 	raw := strings.TrimSpace(os.Getenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON"))
 	if raw == "" {
-		return tokens, nil
+		return credentials, nil
 	}
-	var rotated []string
-	if err := json.Unmarshal([]byte(raw), &rotated); err != nil {
+	var encoded []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
 		return nil, err
 	}
-	for _, token := range rotated {
-		appendToken(token)
+	for _, item := range encoded {
+		rotationIndex++
+		credential, err := decodeQueryRotationCredential(item)
+		if err != nil {
+			return nil, err
+		}
+		if err := appendCredential(credential, "rotation-"+strconv.Itoa(rotationIndex)); err != nil {
+			return nil, err
+		}
 	}
-	return tokens, nil
+	return credentials, nil
+}
+
+func primaryQueryCredentialFromEnv(primary string) (QueryTokenCredential, error) {
+	notBefore, err := envOptionalTime("ANALYTICS_SERVICE_QUERY_TOKEN_NOT_BEFORE")
+	if err != nil {
+		return QueryTokenCredential{}, err
+	}
+	expiresAt, err := envOptionalTime("ANALYTICS_SERVICE_QUERY_TOKEN_EXPIRES_AT")
+	if err != nil {
+		return QueryTokenCredential{}, err
+	}
+	return QueryTokenCredential{
+		ID:        envString("ANALYTICS_SERVICE_QUERY_TOKEN_ID", ""),
+		Token:     primary,
+		NotBefore: notBefore,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func decodeQueryRotationCredential(item json.RawMessage) (QueryTokenCredential, error) {
+	if len(item) == 0 {
+		return QueryTokenCredential{}, nil
+	}
+	if item[0] == '"' {
+		var token string
+		if err := json.Unmarshal(item, &token); err != nil {
+			return QueryTokenCredential{}, err
+		}
+		return QueryTokenCredential{Token: token}, nil
+	}
+	var encoded struct {
+		ID        string `json:"id"`
+		Token     string `json:"token"`
+		NotBefore string `json:"not_before"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(item, &encoded); err != nil {
+		return QueryTokenCredential{}, err
+	}
+	if strings.TrimSpace(encoded.Token) == "" {
+		return QueryTokenCredential{}, errors.New("query token entry token is required")
+	}
+	notBefore, err := parseOptionalTime(encoded.NotBefore)
+	if err != nil {
+		return QueryTokenCredential{}, err
+	}
+	expiresAt, err := parseOptionalTime(encoded.ExpiresAt)
+	if err != nil {
+		return QueryTokenCredential{}, err
+	}
+	return QueryTokenCredential{
+		ID:        encoded.ID,
+		Token:     encoded.Token,
+		NotBefore: notBefore,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func queryTokenValues(credentials []QueryTokenCredential) []string {
+	values := make([]string, 0, len(credentials))
+	for _, credential := range credentials {
+		credential.Token = strings.TrimSpace(credential.Token)
+		if credential.Token == "" {
+			continue
+		}
+		values = append(values, credential.Token)
+	}
+	return values
 }
 
 func envBool(name string, fallback bool) bool {
@@ -253,6 +355,22 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func envOptionalTime(name string) (time.Time, error) {
+	return parseOptionalTime(os.Getenv(name))
+}
+
+func parseOptionalTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
 }
 
 func defaultWorkerConsumer() string {

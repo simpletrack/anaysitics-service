@@ -3,6 +3,7 @@ package config
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestLoadFromEnvRequiresRedisAddressByDefault(t *testing.T) {
@@ -127,6 +128,70 @@ func TestLoadFromEnvAcceptsQueryTokenRotationAllowlist(t *testing.T) {
 	}
 	if !slices.Equal(cfg.QueryTokens, []string{"current-token", "previous-token"}) {
 		t.Fatalf("unexpected accepted query tokens %#v", cfg.QueryTokens)
+	}
+}
+
+func TestLoadFromEnvAcceptsStructuredQueryTokenCredentials(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "current-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_ID", "current")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_EXPIRES_AT", "2026-05-03T12:00:00Z")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `[
+		{"id":"previous","token":"previous-token","expires_at":"2026-05-03T10:15:00Z"},
+		"legacy-token"
+	]`)
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected structured query credentials to load: %v", err)
+	}
+	if !slices.Equal(cfg.QueryTokens, []string{"current-token", "previous-token", "legacy-token"}) {
+		t.Fatalf("unexpected accepted query tokens %#v", cfg.QueryTokens)
+	}
+	if len(cfg.QueryCredentials) != 3 {
+		t.Fatalf("expected three query credentials, got %#v", cfg.QueryCredentials)
+	}
+	if cfg.QueryCredentials[1].ID != "previous" {
+		t.Fatalf("expected previous token id, got %#v", cfg.QueryCredentials[1])
+	}
+	if cfg.QueryCredentials[1].ExpiresAt.Format(time.RFC3339) != "2026-05-03T10:15:00Z" {
+		t.Fatalf("unexpected rotated token expiry %#v", cfg.QueryCredentials[1])
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidStructuredQueryTokenWindow(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "current-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `[
+		{"id":"broken","token":"previous-token","not_before":"2026-05-03T11:00:00Z","expires_at":"2026-05-03T10:00:00Z"}
+	]`)
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected invalid structured query token window to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsStructuredQueryTokenWithoutToken(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "current-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `[
+		{"id":"broken","token":"   "}
+	]`)
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected structured query token without token to fail")
 	}
 }
 

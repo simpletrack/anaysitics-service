@@ -1,7 +1,6 @@
 package collectapi
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -32,6 +31,7 @@ type Options struct {
 	QueryReader           storage.EventReader   // QueryReader serves internal Events and Realtime readback when enabled
 	QueryToken            string                // QueryToken authorizes internal Events and Realtime readback requests
 	QueryTokens           []string              // QueryTokens are accepted internal readback tokens during rotation windows
+	QueryCredentials      []QueryCredential     // QueryCredentials are accepted internal readback tokens with lifecycle metadata
 }
 
 // Handler routes health, tracker, and collect requests.
@@ -73,8 +73,9 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 	// Collapse legacy single-token config and rotation allowlist config before
 	// exposing the internal read routes.
-	opts.QueryTokens = normalizeQueryTokens(append([]string{opts.QueryToken}, opts.QueryTokens...))
-	if opts.QueryReader != nil && len(opts.QueryTokens) == 0 {
+	opts.QueryCredentials = normalizeQueryCredentials(opts.QueryToken, opts.QueryTokens, opts.QueryCredentials)
+	opts.QueryTokens = nil
+	if opts.QueryReader != nil && len(opts.QueryCredentials) == 0 {
 		return nil, errors.New("query token is required when query reader is configured")
 	}
 	return &Handler{opts: opts}, nil
@@ -351,41 +352,6 @@ func bearerToken(value string) string {
 		return ""
 	}
 	return strings.TrimSpace(value[len("Bearer "):])
-}
-
-func normalizeQueryTokens(tokens []string) []string {
-	// Preserve declaration order so deployers can keep the current token first
-	// while still accepting the previous token during a bounded rotation window.
-	normalized := make([]string, 0, len(tokens))
-	seen := make(map[string]struct{}, len(tokens))
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
-			continue
-		}
-		if _, ok := seen[token]; ok {
-			continue
-		}
-		seen[token] = struct{}{}
-		normalized = append(normalized, token)
-	}
-	return normalized
-}
-
-func queryTokenAllowed(value string, accepted []string) bool {
-	// Compare accepted tokens without leaking the matching token position through
-	// ordinary string equality on successful authorization paths.
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	matched := 0
-	for _, token := range accepted {
-		if subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1 {
-			matched = 1
-		}
-	}
-	return matched == 1
 }
 
 func firstHeaderValue(value []byte) string {

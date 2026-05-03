@@ -76,6 +76,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		QueryReader:           queryReader,
 		QueryToken:            cfg.QueryToken,
 		QueryTokens:           cfg.QueryTokens,
+		QueryCredentials:      toQueryCredentials(cfg.QueryCredentials),
 	})
 	if err != nil {
 		_ = closeAll(closers)
@@ -188,6 +189,22 @@ func queryBuilderOptions(cfg config.Config) []clickhouse.EventQueryBuilderOption
 	return []clickhouse.EventQueryBuilderOption{
 		clickhouse.WithAllowedPropertyFilters(selectors...),
 	}
+}
+
+func toQueryCredentials(credentials []config.QueryTokenCredential) []collectapi.QueryCredential {
+	if len(credentials) == 0 {
+		return nil
+	}
+	out := make([]collectapi.QueryCredential, 0, len(credentials))
+	for _, credential := range credentials {
+		out = append(out, collectapi.QueryCredential{
+			ID:        credential.ID,
+			Token:     credential.Token,
+			NotBefore: credential.NotBefore,
+			ExpiresAt: credential.ExpiresAt,
+		})
+	}
+	return out
 }
 
 func allowedPropertySelectors(sources []controlplane.SourceConfig) []storage.PropertySelector {

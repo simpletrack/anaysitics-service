@@ -79,13 +79,14 @@ func (h *Handler) handleRealtime(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.writeQueryCORS(ctx)
-	if !h.requireQueryToken(ctx) {
+	decision, ok := h.requireQueryToken(ctx)
+	if !ok {
 		return
 	}
 
 	// Resolve the runtime source first so the internal read API stays scoped to
 	// the same write-key boundary as collect.
-	source, ok := h.resolveQuerySource(ctx)
+	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
 		return
 	}
@@ -133,13 +134,14 @@ func (h *Handler) handleEvents(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.writeQueryCORS(ctx)
-	if !h.requireQueryToken(ctx) {
+	decision, ok := h.requireQueryToken(ctx)
+	if !ok {
 		return
 	}
 
 	// Resolve the runtime source first so readback cannot be pointed at a
 	// different tenant/project/source than the write-key boundary.
-	source, ok := h.resolveQuerySource(ctx)
+	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
 		return
 	}
@@ -222,23 +224,25 @@ func (h *Handler) handleQueryPreflight(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
-func (h *Handler) requireQueryToken(ctx *fasthttp.RequestCtx) bool {
+func (h *Handler) requireQueryToken(ctx *fasthttp.RequestCtx) (queryTokenAuthDecision, bool) {
 	// A missing accepted-token list means the internal read API was not safely
 	// configured, so hide the route shape instead of returning auth details.
-	if len(h.opts.QueryTokens) == 0 {
+	if len(h.opts.QueryCredentials) == 0 {
 		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
-		return false
+		return queryTokenAuthDecision{State: queryTokenAuthUnknown}, false
 	}
 	// Accept any configured rotation token while keeping source resolution and
 	// query execution behind successful internal authentication.
-	if !queryTokenAllowed(bearerToken(string(ctx.Request.Header.Peek("Authorization"))), h.opts.QueryTokens) {
+	decision := authorizeQueryToken(bearerToken(string(ctx.Request.Header.Peek("Authorization"))), h.opts.QueryCredentials, h.opts.Now())
+	if decision.State == queryTokenAuthUnknown || decision.State == queryTokenAuthExpired || decision.State == queryTokenAuthNotYetValid {
+		h.auditRejectedQueryToken(ctx, decision)
 		h.writeJSON(ctx, fasthttp.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
-		return false
+		return queryTokenAuthDecision{}, false
 	}
-	return true
+	return decision, true
 }
 
-func (h *Handler) resolveQuerySource(ctx *fasthttp.RequestCtx) (controlplane.SourceConfig, bool) {
+func (h *Handler) resolveQuerySource(ctx *fasthttp.RequestCtx, decision queryTokenAuthDecision) (controlplane.SourceConfig, bool) {
 	// Query routes stay on the same write-key boundary as collect, but they also
 	// have to emit CORS headers for browser or SaaS-page callers before token
 	// validation runs.
@@ -257,7 +261,34 @@ func (h *Handler) resolveQuerySource(ctx *fasthttp.RequestCtx) (controlplane.Sou
 		h.writeJSON(ctx, fasthttp.StatusForbidden, ErrorResponse{Error: "origin is not allowed"})
 		return controlplane.SourceConfig{}, false
 	}
+	h.auditAcceptedQueryToken(ctx, decision, source)
 	return source, true
+}
+
+func (h *Handler) auditAcceptedQueryToken(ctx *fasthttp.RequestCtx, decision queryTokenAuthDecision, source controlplane.SourceConfig) {
+	if decision.State != queryTokenAuthAllowedGrace {
+		return
+	}
+	log.Printf(
+		"accepted rotated query token token_id=%s tenant_id=%s project_id=%s source_id=%s route=%s remote_ip=%s",
+		decision.Credential.ID,
+		source.TenantID,
+		source.ProjectID,
+		source.SourceID,
+		string(ctx.Path()),
+		h.clientIP(ctx),
+	)
+}
+
+func (h *Handler) auditRejectedQueryToken(ctx *fasthttp.RequestCtx, decision queryTokenAuthDecision) {
+	switch decision.State {
+	case queryTokenAuthExpired:
+		log.Printf("rejected expired query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, string(ctx.Path()), h.clientIP(ctx))
+	case queryTokenAuthNotYetValid:
+		log.Printf("rejected not-yet-valid query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, string(ctx.Path()), h.clientIP(ctx))
+	default:
+		log.Printf("rejected unknown query token route=%s remote_ip=%s", string(ctx.Path()), h.clientIP(ctx))
+	}
 }
 
 func (h *Handler) writeQueryCORS(ctx *fasthttp.RequestCtx) {

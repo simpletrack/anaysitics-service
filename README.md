@@ -130,14 +130,21 @@ token and temporarily add the previous token to
 
 ```powershell
 $env:ANALYTICS_SERVICE_QUERY_TOKEN='query-service-token-v2'
-$env:ANALYTICS_SERVICE_QUERY_TOKENS_JSON='["query-service-token-v1"]'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN_ID='current'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN_EXPIRES_AT='2026-05-04T12:00:00Z'
+$env:ANALYTICS_SERVICE_QUERY_TOKENS_JSON='[
+  {"id":"previous","token":"query-service-token-v1","expires_at":"2026-05-04T10:15:00Z"}
+]'
 ```
 
 Rotation should be short-lived: deploy the service accepting both tokens,
 switch `simpletrack-saas` to the new token, then remove the old token from the
 JSON allowlist once all callers have moved. This service only enforces accepted
 runtime tokens; token creation, storage, and operator workflow remain owned by
-deployment and the SaaS control-plane environment.
+deployment and the SaaS control-plane environment. Legacy string arrays such as
+`["query-service-token-v1"]` still work, but structured entries add a bounded
+activation/expiry window and emit audit logs when a rotated token is accepted or
+an expired/not-yet-valid token is presented.
 
 By default the service only accepts `/collect` and durably enqueues events to Redis.
 To run ingestion in the same process for local or small deployments, opt in:

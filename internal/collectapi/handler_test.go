@@ -1,9 +1,11 @@
 package collectapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/url"
 	"strings"
@@ -377,6 +379,90 @@ func TestQueryRoutesRejectUnknownBearerDuringRotation(t *testing.T) {
 	}
 }
 
+func TestQueryRoutesAcceptStructuredRotatedBearerToken(t *testing.T) {
+	logs := captureLogs(t)
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, &countingResolver{source: testSourceConfig()}, reader, []QueryCredential{
+		{
+			ID:    "current",
+			Token: "current-token",
+		},
+		{
+			ID:        "previous",
+			Token:     "previous-token",
+			ExpiresAt: time.Date(2026, 5, 3, 10, 15, 0, 0, time.UTC),
+		},
+	})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer previous-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected structured rotated token to be accepted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.realtimeQuery.SourceID != "source_control" {
+		t.Fatalf("expected structured rotated token to reach EventReader, got %#v", reader.realtimeQuery)
+	}
+	assertAuditLog(t, logs.String(), "token_id=previous", "/v1/realtime", "previous-token")
+}
+
+func TestQueryRoutesRejectExpiredBearerToken(t *testing.T) {
+	logs := captureLogs(t)
+	resolver := &countingResolver{source: testSourceConfig()}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, resolver, reader, []QueryCredential{
+		{
+			ID:        "current",
+			Token:     "expired-token",
+			ExpiresAt: time.Date(2026, 5, 3, 9, 59, 0, 0, time.UTC),
+		},
+	})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer expired-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected unauthorized response for expired token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("expired query token should not resolve source, got %d calls", resolver.calls)
+	}
+	if reader.realtimeQuery.SourceID != "" {
+		t.Fatalf("expired query token should not reach EventReader, got %#v", reader.realtimeQuery)
+	}
+	assertAuditLog(t, logs.String(), "token_id=current", "/v1/realtime", "expired-token")
+}
+
+func TestQueryRoutesRejectNotYetValidBearerToken(t *testing.T) {
+	logs := captureLogs(t)
+	resolver := &countingResolver{source: testSourceConfig()}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, resolver, reader, []QueryCredential{
+		{
+			ID:        "next",
+			Token:     "future-token",
+			NotBefore: time.Date(2026, 5, 3, 10, 5, 0, 0, time.UTC),
+		},
+	})
+
+	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer future-token",
+	})
+
+	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected unauthorized response for not-yet-valid token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("not-yet-valid query token should not resolve source, got %d calls", resolver.calls)
+	}
+	if reader.realtimeQuery.SourceID != "" {
+		t.Fatalf("not-yet-valid query token should not reach EventReader, got %#v", reader.realtimeQuery)
+	}
+	assertAuditLog(t, logs.String(), "token_id=next", "/v1/realtime", "future-token")
+}
+
 func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
 	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
 
@@ -509,6 +595,29 @@ func newTestQueryHandlerWithResolverAndTokens(t *testing.T, resolver controlplan
 	return handler.ServeFastHTTP
 }
 
+func newTestQueryHandlerWithResolverAndCredentials(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader, credentials []QueryCredential) fasthttp.RequestHandler {
+	t.Helper()
+
+	handler, err := NewHandler(Options{
+		CollectPath:           "/collect",
+		HealthPath:            "/healthz",
+		TrackerPath:           "/tracker.js",
+		TrustForwardedHeaders: false,
+		TrackerScript:         []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:         resolver,
+		Bus:              &recordingBus{},
+		QueryReader:      reader,
+		QueryCredentials: credentials,
+	})
+	if err != nil {
+		t.Fatalf("new handler failed: %v", err)
+	}
+	return handler.ServeFastHTTP
+}
+
 func serve(handler fasthttp.RequestHandler, method string, path string, body string, headers map[string]string) *fasthttp.RequestCtx {
 	var request fasthttp.Request
 	request.Header.SetMethod(method)
@@ -525,6 +634,38 @@ func serve(handler fasthttp.RequestHandler, method string, path string, body str
 	ctx.Init(&request, &net.TCPAddr{IP: net.ParseIP("198.51.100.10"), Port: 443}, nil)
 	handler(&ctx)
 	return &ctx
+}
+
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	buffer := &bytes.Buffer{}
+	originalWriter := log.Writer()
+	originalFlags := log.Flags()
+	originalPrefix := log.Prefix()
+	log.SetOutput(buffer)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(originalWriter)
+		log.SetFlags(originalFlags)
+		log.SetPrefix(originalPrefix)
+	})
+	return buffer
+}
+
+func assertAuditLog(t *testing.T, logs string, tokenID string, route string, rawToken string) {
+	t.Helper()
+
+	if !strings.Contains(logs, tokenID) {
+		t.Fatalf("expected audit log to contain %q, got %q", tokenID, logs)
+	}
+	if !strings.Contains(logs, route) {
+		t.Fatalf("expected audit log to contain route %q, got %q", route, logs)
+	}
+	if strings.Contains(logs, rawToken) {
+		t.Fatalf("expected audit log to avoid raw token %q, got %q", rawToken, logs)
+	}
 }
 
 func validCollectBody(writeKey string) string {
