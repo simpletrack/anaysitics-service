@@ -3,11 +3,14 @@ package collectapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +166,8 @@ func TestHealthRouteReturnsOK(t *testing.T) {
 }
 
 func TestRealtimeQueryReturnsRecords(t *testing.T) {
+	eventTime := time.Date(2026, 5, 3, 9, 55, 0, 0, time.UTC)
+	visitID := derivedVisitID("session_1", eventTime)
 	reader := &recordingQueryReader{
 		realtime: []storage.EventRecord{
 			{
@@ -174,7 +179,8 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 				EventName:  "page_view",
 				DistinctID: "visitor_1",
 				SessionID:  "session_1",
-				EventTime:  time.Date(2026, 5, 3, 9, 55, 0, 0, time.UTC),
+				VisitID:    visitID,
+				EventTime:  eventTime,
 				ReceivedAt: time.Date(2026, 5, 3, 9, 55, 1, 0, time.UTC),
 				Properties: `{"path":"/"}`,
 				Source:     "browser",
@@ -211,9 +217,14 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	if got := string(response.Items[0].Properties); got != `{"path":"/"}` {
 		t.Fatalf("expected realtime properties JSON, got %s", got)
 	}
+	if got := response.Items[0].VisitID; got != visitID {
+		t.Fatalf("expected realtime visit id %q, got %q", visitID, got)
+	}
 }
 
 func TestEventsQueryReturnsRecords(t *testing.T) {
+	eventTime := time.Date(2026, 5, 3, 9, 20, 0, 0, time.UTC)
+	visitID := derivedVisitID("session_1", eventTime)
 	reader := &recordingQueryReader{
 		events: []storage.EventRecord{
 			{
@@ -225,7 +236,8 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 				EventName:      "signup_clicked",
 				DistinctID:     "visitor_1",
 				SessionID:      "session_1",
-				EventTime:      time.Date(2026, 5, 3, 9, 20, 0, 0, time.UTC),
+				VisitID:        visitID,
+				EventTime:      eventTime,
 				ReceivedAt:     time.Date(2026, 5, 3, 9, 20, 1, 0, time.UTC),
 				Properties:     `{"button":"hero"}`,
 				UserProperties: `{"plan":"free"}`,
@@ -264,6 +276,9 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	if got := string(response.Items[0].UserProperties); got != `{"plan":"free"}` {
 		t.Fatalf("expected user properties JSON, got %s", got)
+	}
+	if got := response.Items[0].VisitID; got != visitID {
+		t.Fatalf("expected events visit id %q, got %q", visitID, got)
 	}
 }
 
@@ -713,6 +728,15 @@ func assertFiltered(t *testing.T, ctx *fasthttp.RequestCtx, bus *recordingBus) {
 	if len(bus.published) != 0 {
 		t.Fatalf("filtered traffic should not publish events")
 	}
+}
+
+func derivedVisitID(sessionID string, eventTime time.Time) string {
+	if sessionID == "" || eventTime.IsZero() {
+		return ""
+	}
+	bucket := eventTime.UTC().Truncate(30 * time.Minute).Unix()
+	sum := sha256.Sum256([]byte(sessionID + ":" + strconv.FormatInt(bucket, 10)))
+	return "vis_" + hex.EncodeToString(sum[:16])
 }
 
 type recordingBus struct {

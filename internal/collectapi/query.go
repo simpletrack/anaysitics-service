@@ -40,6 +40,7 @@ type queryEventResponse struct {
 	EventName      string          `json:"event_name"`
 	DistinctID     string          `json:"distinct_id"`
 	SessionID      string          `json:"session_id,omitempty"`
+	VisitID        string          `json:"visit_id,omitempty"` // VisitID is the optional visit key returned to readback callers
 	EventTime      string          `json:"event_time"`
 	ReceivedAt     string          `json:"received_at"`
 	Properties     json.RawMessage `json:"properties,omitempty"`
@@ -529,6 +530,7 @@ func toQueryEventResponse(record storage.EventRecord) queryEventResponse {
 		EventName:      record.EventName,
 		DistinctID:     record.DistinctID,
 		SessionID:      record.SessionID,
+		VisitID:        record.VisitID,
 		EventTime:      record.EventTime.UTC().Format(time.RFC3339Nano),
 		ReceivedAt:     record.ReceivedAt.UTC().Format(time.RFC3339Nano),
 		Properties:     queryJSON(record.Properties),
