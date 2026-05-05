@@ -9,6 +9,8 @@ import (
 	"errors"
 	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -67,6 +69,56 @@ func TestCollectRejectsInvalidWriteKey(t *testing.T) {
 	}
 	if len(bus.published) != 0 {
 		t.Fatalf("invalid write key should not publish events")
+	}
+}
+
+func TestCollectRejectsSourceDisabledAfterHTTPRevalidation(t *testing.T) {
+	var requestCount int
+	source := testSourceConfig().Normalize()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.Header.Get("Authorization"); got != "Bearer runtime-token" {
+			t.Fatalf("expected bearer auth, got %q", got)
+		}
+		switch requestCount {
+		case 1:
+			w.Header().Set("ETag", `"runtime-source-v1"`)
+			_ = json.NewEncoder(w).Encode(source)
+		case 2:
+			if got := r.Header.Get("If-None-Match"); got != `"runtime-source-v1"` {
+				t.Fatalf("expected conditional revalidation, got %q", got)
+			}
+			w.WriteHeader(http.StatusGone)
+		default:
+			t.Fatalf("unexpected control-plane request %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	bus := &recordingBus{}
+	handler := newTestHandlerWithResolver(t, newTestControlPlaneHTTPResolver(t, server.URL), false, bus)
+
+	first := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+		"Origin": "https://docs.example.com",
+	})
+	if first.Response.StatusCode() != fasthttp.StatusAccepted {
+		t.Fatalf("expected initial collect acceptance, got %d: %s", first.Response.StatusCode(), first.Response.Body())
+	}
+	if len(bus.published) != 1 {
+		t.Fatalf("expected one accepted event before disable, got %d", len(bus.published))
+	}
+
+	second := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+		"Origin": "https://docs.example.com",
+	})
+	if second.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("expected disabled source rejection, got %d: %s", second.Response.StatusCode(), second.Response.Body())
+	}
+	if string(second.Response.Body()) != `{"error":"source is disabled"}` {
+		t.Fatalf("expected stable disabled error, got %s", second.Response.Body())
+	}
+	if len(bus.published) != 1 {
+		t.Fatalf("disabled source should not publish another event, got %d", len(bus.published))
 	}
 }
 
@@ -219,6 +271,72 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	}
 	if got := response.Items[0].VisitID; got != visitID {
 		t.Fatalf("expected realtime visit id %q, got %q", visitID, got)
+	}
+}
+
+func TestRealtimeQueryRejectsDeletedSourceAfterHTTPRevalidation(t *testing.T) {
+	var requestCount int
+	source := testSourceConfig().Normalize()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			w.Header().Set("ETag", `"runtime-source-v1"`)
+			_ = json.NewEncoder(w).Encode(source)
+		case 2:
+			if got := r.Header.Get("If-None-Match"); got != `"runtime-source-v1"` {
+				t.Fatalf("expected conditional revalidation, got %q", got)
+			}
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected control-plane request %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	reader := &recordingQueryReader{
+		realtime: []storage.EventRecord{
+			{
+				ID:         "evt_recent",
+				TenantID:   "tenant_control",
+				ProjectID:  "project_control",
+				SourceID:   "source_control",
+				SourceType: "web",
+				EventName:  "page_view",
+				DistinctID: "visitor_1",
+				EventTime:  time.Date(2026, 5, 3, 9, 55, 0, 0, time.UTC),
+				ReceivedAt: time.Date(2026, 5, 3, 9, 55, 1, 0, time.UTC),
+			},
+		},
+	}
+	handler := newTestQueryHandlerWithResolverAndCredentials(
+		t,
+		newTestControlPlaneHTTPResolver(t, server.URL),
+		reader,
+		[]QueryCredential{{Token: "query-token"}},
+	)
+
+	first := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+	if first.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected initial realtime response, got %d: %s", first.Response.StatusCode(), first.Response.Body())
+	}
+	if reader.realtimeCalls != 1 {
+		t.Fatalf("expected one realtime read before delete, got %d", reader.realtimeCalls)
+	}
+
+	second := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+	if second.Response.StatusCode() != fasthttp.StatusUnauthorized {
+		t.Fatalf("expected deleted source rejection, got %d: %s", second.Response.StatusCode(), second.Response.Body())
+	}
+	if string(second.Response.Body()) != `{"error":"invalid write key"}` {
+		t.Fatalf("expected stable deleted-source error, got %s", second.Response.Body())
+	}
+	if reader.realtimeCalls != 1 {
+		t.Fatalf("deleted source should not reach EventReader again, got %d calls", reader.realtimeCalls)
 	}
 }
 
@@ -533,6 +651,12 @@ func newTestHandlerWithBus(t *testing.T, source controlplane.SourceConfig, trust
 	if err != nil {
 		t.Fatalf("new memory resolver failed: %v", err)
 	}
+	return newTestHandlerWithResolver(t, resolver, trustForwarded, bus)
+}
+
+func newTestHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, trustForwarded bool, bus *recordingBus) fasthttp.RequestHandler {
+	t.Helper()
+
 	handler, err := NewHandler(Options{
 		CollectPath:           "/collect",
 		HealthPath:            "/healthz",
@@ -549,6 +673,21 @@ func newTestHandlerWithBus(t *testing.T, source controlplane.SourceConfig, trust
 		t.Fatalf("new handler failed: %v", err)
 	}
 	return handler.ServeFastHTTP
+}
+
+func newTestControlPlaneHTTPResolver(t *testing.T, endpoint string) controlplane.Resolver {
+	t.Helper()
+
+	resolver, err := controlplane.NewHTTPResolver(controlplane.HTTPResolverOptions{
+		Endpoint:              endpoint,
+		BearerToken:           "runtime-token",
+		CacheTTL:              time.Minute,
+		AllowInsecureLoopback: true,
+	})
+	if err != nil {
+		t.Fatalf("new http resolver failed: %v", err)
+	}
+	return resolver
 }
 
 func newTestQueryHandler(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader) fasthttp.RequestHandler {
@@ -761,6 +900,8 @@ type recordingQueryReader struct {
 	realtimeQuery storage.RealtimeQuery
 	events        []storage.EventRecord
 	realtime      []storage.EventRecord
+	eventsCalls   int
+	realtimeCalls int
 	err           error
 }
 
@@ -775,6 +916,7 @@ func (r *countingResolver) ResolveSource(_ context.Context, _ string) (controlpl
 }
 
 func (r *recordingQueryReader) ListEvents(_ context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {
+	r.eventsCalls++
 	r.eventsQuery = query
 	if r.err != nil {
 		return nil, r.err
@@ -783,6 +925,7 @@ func (r *recordingQueryReader) ListEvents(_ context.Context, query storage.Event
 }
 
 func (r *recordingQueryReader) ListRealtime(_ context.Context, query storage.RealtimeQuery) ([]storage.EventRecord, error) {
+	r.realtimeCalls++
 	r.realtimeQuery = query
 	if r.err != nil {
 		return nil, r.err
