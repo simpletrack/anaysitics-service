@@ -517,6 +517,37 @@ func TestEventsQueryMapsAllowlistedPropertyFilters(t *testing.T) {
 	}
 }
 
+func TestEventsQueryMapsRepeatablePropertyFiltersInOrder(t *testing.T) {
+	source := testSourceConfig()
+	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+		{Scope: "user", Name: "score", ValueTypes: []string{"number"}},
+	}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandler(t, source, reader)
+	firstFilter := url.QueryEscape(`{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}`)
+	secondFilter := url.QueryEscape(`{"scope":"user","name":"score","type":"number","op":"neq","value":42}`)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+firstFilter+"&property_filter="+secondFilter, "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(reader.eventsQuery.PropertyFilters) != 2 {
+		t.Fatalf("expected two property filters, got %#v", reader.eventsQuery.PropertyFilters)
+	}
+	first := reader.eventsQuery.PropertyFilters[0]
+	if first.Scope != storage.PropertyScopeEvent || first.Name != "button" || first.ValueType != storage.PropertyValueString || first.Operator != storage.EventFilterEquals || first.StringValue != "hero" {
+		t.Fatalf("unexpected first property filter %#v", first)
+	}
+	second := reader.eventsQuery.PropertyFilters[1]
+	if second.Scope != storage.PropertyScopeUser || second.Name != "score" || second.ValueType != storage.PropertyValueNumber || second.Operator != storage.EventFilterNotEquals || second.NumberValue != 42 {
+		t.Fatalf("unexpected second property filter %#v", second)
+	}
+}
+
 func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
 	source := testSourceConfig()
 	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
