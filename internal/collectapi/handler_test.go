@@ -581,6 +581,51 @@ func TestEventsQueryMapsRepeatablePropertyFiltersInOrder(t *testing.T) {
 	}
 }
 
+func TestEventsQueryCombinesScalarSortAndRepeatablePropertyFilters(t *testing.T) {
+	source := testSourceConfig()
+	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+		{Scope: "user", Name: "score", ValueTypes: []string{"number"}},
+	}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandler(t, source, reader)
+	firstFilter := url.QueryEscape(`{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}`)
+	secondFilter := url.QueryEscape(`{"scope":"user","name":"score","type":"number","op":"neq","value":42}`)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&limit=25&offset=5&event_name=signup_clicked&distinct_id=visitor_1&visit_id=visit_2&sort_field=event_name&sort_direction=asc&property_filter="+firstFilter+"&property_filter="+secondFilter, "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsQuery.EventName != "signup_clicked" || reader.eventsQuery.DistinctID != "visitor_1" {
+		t.Fatalf("expected scalar filters to reach analytics-core, got %#v", reader.eventsQuery)
+	}
+	if len(reader.eventsQuery.Filters) != 1 ||
+		reader.eventsQuery.Filters[0].Field != storage.EventFilterByVisitID ||
+		reader.eventsQuery.Filters[0].Value != "visit_2" {
+		t.Fatalf("expected visit filter to reach analytics-core, got %#v", reader.eventsQuery.Filters)
+	}
+	if reader.eventsQuery.Limit != 25 || reader.eventsQuery.Offset != 5 {
+		t.Fatalf("expected paging to reach analytics-core, got limit=%d offset=%d", reader.eventsQuery.Limit, reader.eventsQuery.Offset)
+	}
+	if reader.eventsQuery.SortField != storage.EventSortByEventName || reader.eventsQuery.SortDirection != storage.EventSortAscending {
+		t.Fatalf("expected sort allowlist values, got %#v", reader.eventsQuery)
+	}
+	if len(reader.eventsQuery.PropertyFilters) != 2 {
+		t.Fatalf("expected repeatable property filters to reach analytics-core, got %#v", reader.eventsQuery.PropertyFilters)
+	}
+	first := reader.eventsQuery.PropertyFilters[0]
+	if first.Scope != storage.PropertyScopeEvent || first.Name != "button" || first.ValueType != storage.PropertyValueString || first.Operator != storage.EventFilterEquals || first.StringValue != "hero" {
+		t.Fatalf("unexpected first property filter %#v", first)
+	}
+	second := reader.eventsQuery.PropertyFilters[1]
+	if second.Scope != storage.PropertyScopeUser || second.Name != "score" || second.ValueType != storage.PropertyValueNumber || second.Operator != storage.EventFilterNotEquals || second.NumberValue != 42 {
+		t.Fatalf("unexpected second property filter %#v", second)
+	}
+}
+
 func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
 	source := testSourceConfig()
 	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
