@@ -17,6 +17,7 @@ import (
 	"github.com/simpletrack/analytics-service/internal/collectapi"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
+	"github.com/simpletrack/analytics-service/internal/geoip"
 	gormclickhouse "gorm.io/driver/clickhouse"
 	"gorm.io/gorm"
 )
@@ -31,20 +32,31 @@ type Runtime struct {
 
 // New assembles the runtime without starting background workers.
 func New(cfg config.Config) (*Runtime, error) {
+	closers := make([]io.Closer, 0, 4)
+
 	// Build the runtime-only view of SaaS source configuration. This resolver
 	// reads config but does not own any CRUD lifecycle.
 	resolver, err := newSourceResolver(cfg)
 	if err != nil {
 		return nil, err
 	}
+	geoResolver, geoCloser, err := newGeoResolver(cfg)
+	if err != nil {
+		_ = closeAll(closers)
+		return nil, err
+	}
+	if geoCloser != nil {
+		closers = append(closers, geoCloser)
+	}
 
 	// Build the event bus before exposing HTTP routes. The default path is Redis
 	// Stream so accepted /collect responses correspond to durable enqueueing.
 	bus, busClosers, err := newEventBus(cfg)
 	if err != nil {
+		_ = closeAll(closers)
 		return nil, err
 	}
-	closers := append([]io.Closer{}, busClosers...)
+	closers = append(closers, busClosers...)
 
 	// Load the tracker asset at startup so missing deployments fail closed
 	// instead of returning 404s for a configured public SDK route.
@@ -82,6 +94,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		QueryToken:            cfg.QueryToken,
 		QueryTokens:           cfg.QueryTokens,
 		QueryCredentials:      toQueryCredentials(cfg.QueryCredentials),
+		GeoResolver:           geoResolver,
 	})
 	if err != nil {
 		_ = closeAll(closers)
@@ -106,6 +119,17 @@ func New(cfg config.Config) (*Runtime, error) {
 		processor: processor,
 		closers:   closers,
 	}, nil
+}
+
+func newGeoResolver(cfg config.Config) (*geoip.Resolver, io.Closer, error) {
+	if cfg.GeoIPMMDBFile == "" {
+		return nil, nil, nil
+	}
+	resolver, err := geoip.NewResolver(cfg.GeoIPMMDBFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resolver, resolver, nil
 }
 
 // App returns the Fiber app owned by the runtime.

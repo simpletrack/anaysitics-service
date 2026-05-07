@@ -50,6 +50,7 @@ type Config struct {
 	OpenAPIFile                       string                      // OpenAPIFile is the local OpenAPI YAML or JSON file
 	TrackerFile                       string                      // TrackerFile is the local JavaScript asset path
 	TrustForwardedHeaders             bool                        // TrustForwardedHeaders enables proxy-provided client IP headers
+	GeoIPMMDBFile                     string                      // GeoIPMMDBFile enables offline MaxMind-compatible geo enrichment when set
 	EventBus                          string                      // EventBus selects the runtime queue backend, usually redis
 	AllowInMemoryBus                  bool                        // AllowInMemoryBus explicitly permits non-durable demo mode
 	RedisAddr                         string                      // RedisAddr is the Redis server address used for durable event enqueueing
@@ -104,6 +105,7 @@ func LoadFromEnv() (Config, error) {
 			"ANALYTICS_SERVICE_TRUST_FORWARDED_HEADERS",
 			false,
 		),
+		GeoIPMMDBFile:                     envString("ANALYTICS_SERVICE_GEOIP_MMDB_FILE", ""),
 		EventBus:                          strings.ToLower(envString("ANALYTICS_SERVICE_EVENTBUS", defaultEventBus)),
 		AllowInMemoryBus:                  envBool("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", false),
 		RedisAddr:                         envString("ANALYTICS_SERVICE_REDIS_ADDR", ""),

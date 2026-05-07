@@ -22,23 +22,25 @@ const contentTypeJSON = "application/json"
 
 // Options configures the analytics HTTP runtime.
 type Options struct {
-	CollectPath           string                // CollectPath is the POST route used by browser and server SDKs
-	HealthPath            string                // HealthPath is the GET route used by process health checks
-	TrackerPath           string                // TrackerPath is the GET route used to serve the browser tracker
-	EventsPath            string                // EventsPath is the GET route used by internal Events readback
-	RealtimePath          string                // RealtimePath is the GET route used by internal Realtime readback
-	SwaggerEnabled        bool                  // SwaggerEnabled exposes the generated OpenAPI documentation UI
-	SwaggerPath           string                // SwaggerPath is the Fiber route prefix for Swagger UI
-	OpenAPIFile           string                // OpenAPIFile is the local OpenAPI YAML or JSON file served by Swagger UI
-	TrustForwardedHeaders bool                  // TrustForwardedHeaders enables proxy-provided client address headers
-	TrackerScript         []byte                // TrackerScript is the JavaScript asset returned by TrackerPath
-	Now                   collect.Clock         // Now supplies deterministic receive time for tests
-	Resolver              controlplane.Resolver // Resolver reads runtime source configuration owned by the SaaS control plane
-	Bus                   eventbus.EventBus     // Bus receives validated analytics events for ingestion
-	QueryReader           storage.EventReader   // QueryReader serves internal Events and Realtime readback when enabled
-	QueryToken            string                // QueryToken authorizes internal Events and Realtime readback requests
-	QueryTokens           []string              // QueryTokens are accepted internal readback tokens during rotation windows
-	QueryCredentials      []QueryCredential     // QueryCredentials are accepted internal readback tokens with lifecycle metadata
+	CollectPath           string                  // CollectPath is the POST route used by browser and server SDKs
+	HealthPath            string                  // HealthPath is the GET route used by process health checks
+	TrackerPath           string                  // TrackerPath is the GET route used to serve the browser tracker
+	EventsPath            string                  // EventsPath is the GET route used by internal Events readback
+	RealtimePath          string                  // RealtimePath is the GET route used by internal Realtime readback
+	SwaggerEnabled        bool                    // SwaggerEnabled exposes the generated OpenAPI documentation UI
+	SwaggerPath           string                  // SwaggerPath is the Fiber route prefix for Swagger UI
+	OpenAPIFile           string                  // OpenAPIFile is the local OpenAPI YAML or JSON file served by Swagger UI
+	TrustForwardedHeaders bool                    // TrustForwardedHeaders enables proxy-provided client address headers
+	TrackerScript         []byte                  // TrackerScript is the JavaScript asset returned by TrackerPath
+	Now                   collect.Clock           // Now supplies deterministic receive time for tests
+	Resolver              controlplane.Resolver   // Resolver reads runtime source configuration owned by the SaaS control plane
+	Bus                   eventbus.EventBus       // Bus receives validated analytics events for ingestion
+	QueryReader           storage.EventReader     // QueryReader serves internal Events and Realtime readback when enabled
+	QueryToken            string                  // QueryToken authorizes internal Events and Realtime readback requests
+	QueryTokens           []string                // QueryTokens are accepted internal readback tokens during rotation windows
+	QueryCredentials      []QueryCredential       // QueryCredentials are accepted internal readback tokens with lifecycle metadata
+	UserAgentParser       collect.UserAgentParser // UserAgentParser optionally overrides analytics-core default UA parsing
+	GeoResolver           collect.GeoResolver     // GeoResolver optionally resolves transient client IPs into coarse geography
 }
 
 // Handler routes health, tracker, collect, query, and documentation requests.
@@ -257,10 +259,14 @@ func (h *Handler) stages(source controlplane.SourceConfig) ([]collect.Stage, err
 	// Enrichment uses transient client metadata but persists only bounded
 	// derived properties. Raw IP addresses stay outside the event envelope.
 	enrichment, err := collect.NewClientEnrichmentStage(collect.ClientEnrichmentConfig{
-		HashSalt:         source.ClientHashSalt,
-		IncludeUserAgent: true,
-		IncludeIPHash:    true,
-		IncludeReferrer:  true,
+		HashSalt:           source.ClientHashSalt,
+		IncludeUserAgent:   true,
+		IncludeIPHash:      true,
+		IncludeReferrer:    true,
+		IncludeBrowserInfo: true,
+		IncludeGeoInfo:     h.opts.GeoResolver != nil,
+		UserAgentParser:    h.opts.UserAgentParser,
+		GeoResolver:        h.opts.GeoResolver,
 	})
 	if err == nil {
 		stages = append(stages, enrichment)
@@ -301,6 +307,14 @@ func (h *Handler) writeCollectError(ctx fiber.Ctx, envelope contracts.EventEnvel
 		if envelope.ID == "" {
 			envelope = filteredErr.Envelope
 		}
+		log.Printf(
+			"collect filtered: event_id=%s tenant_id=%s project_id=%s source_id=%s reason=%s",
+			envelope.ID,
+			envelope.TenantID,
+			envelope.ProjectID,
+			envelope.SourceID,
+			filteredErr.Reason,
+		)
 		return h.writeJSON(ctx, fiber.StatusAccepted, AcceptedResponse{
 			ID:         envelope.ID,
 			ReceivedAt: envelope.ReceivedAt.Format(time.RFC3339Nano),

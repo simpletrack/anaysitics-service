@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/simpletrack/analytics-core/collect"
 	"github.com/simpletrack/analytics-core/contracts"
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/storage"
@@ -219,6 +220,60 @@ func TestCollectFiltersInternalTraffic(t *testing.T) {
 	})
 
 	assertFiltered(t, ctx, bus)
+}
+
+func TestCollectAddsGeoPropertiesWhenResolverConfigured(t *testing.T) {
+	handler, bus := newTestHandlerWithGeoResolver(t, testSourceConfig(), false, &stubCollectGeoResolver{})
+
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+		"Origin": "https://docs.example.com",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusAccepted {
+		t.Fatalf("expected accepted response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(bus.published) != 1 {
+		t.Fatalf("expected one published event, got %d", len(bus.published))
+	}
+	published := bus.published[0]
+	if published.Properties["geo.country"] != "United States" {
+		t.Fatalf("expected geo country property, got %#v", published.Properties)
+	}
+	if published.Properties["geo.region"] != "California" {
+		t.Fatalf("expected geo region property, got %#v", published.Properties)
+	}
+	if published.Properties["geo.city"] != "San Francisco" {
+		t.Fatalf("expected geo city property, got %#v", published.Properties)
+	}
+}
+
+func TestCollectFilteredAuditLogOmitsRawIP(t *testing.T) {
+	logs := captureLogs(t)
+	handler, bus := newTestHandler(t, testSourceConfig(), true)
+
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+		"Origin":          "https://docs.example.com",
+		"User-Agent":      "Googlebot/2.1",
+		"X-Forwarded-For": "203.0.113.10",
+	})
+
+	assertFiltered(t, ctx, bus)
+	logText := logs.String()
+	for _, want := range []string{
+		"collect filtered:",
+		"event_id=evt_1",
+		"tenant_id=tenant_control",
+		"project_id=project_control",
+		"source_id=source_control",
+		"reason=bot user agent",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected audit log to contain %q, got %q", want, logText)
+		}
+	}
+	if strings.Contains(logText, "203.0.113.10") {
+		t.Fatalf("expected audit log to omit raw ip, got %q", logText)
+	}
 }
 
 func TestTrackerRouteReturnsJavaScript(t *testing.T) {
@@ -803,6 +858,33 @@ func newTestHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, tr
 	return app
 }
 
+func newTestHandlerWithGeoResolver(t *testing.T, source controlplane.SourceConfig, trustForwarded bool, geoResolver collect.GeoResolver) (*fiber.App, *recordingBus) {
+	t.Helper()
+
+	bus := &recordingBus{}
+	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
+	if err != nil {
+		t.Fatalf("new memory resolver failed: %v", err)
+	}
+	app, err := NewApp(Options{
+		CollectPath:           "/collect",
+		HealthPath:            "/healthz",
+		TrackerPath:           "/tracker.js",
+		TrustForwardedHeaders: trustForwarded,
+		TrackerScript:         []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:    resolver,
+		Bus:         bus,
+		GeoResolver: geoResolver,
+	})
+	if err != nil {
+		t.Fatalf("new app failed: %v", err)
+	}
+	return app, bus
+}
+
 func newTestControlPlaneHTTPResolver(t *testing.T, endpoint string) controlplane.Resolver {
 	t.Helper()
 
@@ -1097,4 +1179,14 @@ func (r *recordingQueryReader) ListRealtime(_ context.Context, query storage.Rea
 		return nil, r.err
 	}
 	return append([]storage.EventRecord(nil), r.realtime...), nil
+}
+
+type stubCollectGeoResolver struct{}
+
+func (stubCollectGeoResolver) Resolve(string) (collect.GeoLocation, bool) {
+	return collect.GeoLocation{
+		Country: "United States",
+		Region:  "California",
+		City:    "San Francisco",
+	}, true
 }

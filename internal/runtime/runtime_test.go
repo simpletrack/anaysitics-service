@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/simpletrack/analytics-core/storage"
@@ -70,6 +71,23 @@ func TestAllowedPropertySelectorsUseEnabledStartupSources(t *testing.T) {
 	}
 	assertHasSelector(t, selectors, storage.PropertySelector{Scope: storage.PropertyScopeEvent, Name: "button"})
 	assertHasSelector(t, selectors, storage.PropertySelector{Scope: storage.PropertyScopeUser, Name: "plan"})
+}
+
+func TestNewGeoResolverReturnsNilWhenUnconfigured(t *testing.T) {
+	resolver, closer, err := newGeoResolver(config.Config{})
+	if err != nil {
+		t.Fatalf("expected empty geo config to succeed: %v", err)
+	}
+	if resolver != nil || closer != nil {
+		t.Fatalf("expected nil geo resolver when file is unset, got %v %v", resolver, closer)
+	}
+}
+
+func TestNewGeoResolverRejectsInvalidPath(t *testing.T) {
+	_, _, err := newGeoResolver(config.Config{GeoIPMMDBFile: filepath.Join(t.TempDir(), "missing.mmdb")})
+	if err == nil {
+		t.Fatal("expected invalid geoip path to fail")
+	}
 }
 
 func assertHasSelector(t *testing.T, selectors []storage.PropertySelector, want storage.PropertySelector) {

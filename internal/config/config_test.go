@@ -231,6 +231,21 @@ func TestLoadFromEnvAcceptsControlPlaneInsecureLoopbackFlag(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvReadsGeoIPMMDBFile(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_GEOIP_MMDB_FILE", "C:/data/GeoLite2-City.mmdb")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected geo config to load: %v", err)
+	}
+	if cfg.GeoIPMMDBFile != "C:/data/GeoLite2-City.mmdb" {
+		t.Fatalf("unexpected geoip file %q", cfg.GeoIPMMDBFile)
+	}
+}
+
 func TestLoadFromEnvRejectsMemoryResolverWithoutSources(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_SOURCE_RESOLVER", "memory")
 

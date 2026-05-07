@@ -6,6 +6,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.45.0
 	github.com/gofiber/contrib/v3/swaggerui v1.0.4
 	github.com/gofiber/fiber/v3 v3.2.0
+	github.com/oschwald/maxminddb-golang/v2 v2.2.0
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/simpletrack/analytics-core v0.0.0
 	gorm.io/driver/clickhouse v0.7.0
