@@ -165,6 +165,9 @@ func (r *HTTPResolver) cached(writeKey string) (cachedSourceConfig, bool) {
 	defer r.mu.Unlock()
 
 	cached, ok := r.cache[writeKey]
+	// Treat expiresAt as an exclusive deadline. For example, with a cache entry
+	// stored at 10:00:00 and CacheTTL=5s, a lookup at 10:00:04 may reuse it, but
+	// a lookup at exactly 10:00:05 must miss and revalidate the control plane.
 	if !ok || !r.now().Before(cached.expiresAt) {
 		delete(r.cache, writeKey)
 		return cachedSourceConfig{}, false

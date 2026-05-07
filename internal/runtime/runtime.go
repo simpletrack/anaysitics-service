@@ -305,15 +305,28 @@ func closeAll(closers []io.Closer) error {
 	return err
 }
 
+// newSourceResolver builds the write-key lookup boundary used by /collect.
+//
+// A public write key is only a lookup credential. The returned resolver turns it
+// into a trusted SourceConfig owned by the control plane, including tenant,
+// project, source, origin, filtering, and privacy-salt settings.
 func newSourceResolver(cfg config.Config) (controlplane.Resolver, error) {
-	// Resolver selection is a deployment boundary: memory mode is local/static,
-	// while http mode reads SaaS runtime config without taking over CRUD.
+	// Select the backing source of truth before HTTP routes are exposed. Memory
+	// mode indexes the startup JSON source list for tests and local demos; HTTP
+	// mode calls the SaaS control plane at request time and keeps source CRUD
+	// outside this runtime service.
 	var resolver controlplane.Resolver
 	var err error
 	switch cfg.SourceResolver {
 	case "", "memory":
+		// Memory mode still validates and normalizes every SourceConfig up front,
+		// so a bad tenant/project/source mapping fails startup instead of
+		// accepting events under the wrong analytics boundary.
 		resolver, err = controlplane.NewMemoryResolver(cfg.Sources)
 	case "http":
+		// HTTP mode sends only the presented write key to the control plane. The
+		// trusted response supplies the scope and runtime policy used later by
+		// handleCollect to override client-supplied scope fields.
 		resolver, err = controlplane.NewHTTPResolver(controlplane.HTTPResolverOptions{
 			Endpoint:              cfg.ControlPlaneURL,
 			BearerToken:           cfg.ControlPlaneToken,
@@ -328,9 +341,10 @@ func newSourceResolver(cfg config.Config) (controlplane.Resolver, error) {
 		return nil, err
 	}
 	if cfg.IngestionEnabled && cfg.SourceResolver == "http" {
-		// Same-process ingestion validates ClickHouse tables only for the
-		// startup source list. Bind dynamic HTTP responses to that surface so
-		// collect cannot accept a source whose tables were never checked.
+		// Same-process ingestion validates ClickHouse tables only for the startup
+		// source list. Bind dynamic HTTP responses to that surface so a freshly
+		// created control-plane source cannot be accepted until its routed tables
+		// have been included in startup schema validation.
 		return controlplane.NewSchemaBoundResolver(resolver, cfg.Sources)
 	}
 	return resolver, nil
