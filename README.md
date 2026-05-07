@@ -125,7 +125,8 @@ value is URL-encoded JSON, and each selector must appear in the source's
 
 ```powershell
 $filter = [uri]::EscapeDataString('{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}')
-Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z&property_filter=$filter" `
+$planFilter = [uri]::EscapeDataString('{"scope":"user","name":"plan","type":"string","op":"eq","value":"pro"}')
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z&event_name=cta_click&sort_field=event_name&property_filter=$filter&property_filter=$planFilter" `
   -Headers @{ Authorization = "Bearer query-service-token" }
 ```
 

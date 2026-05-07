@@ -185,7 +185,7 @@ paths:
           name: sort_field
           schema:
             type: string
-            enum: [event_time, received_at]
+            enum: [event_time, received_at, event_name]
         - in: query
           name: sort_direction
           schema:
@@ -194,10 +194,12 @@ paths:
         - in: query
           name: property_filter
           schema:
-            type: string
+            type: array
+            items:
+              type: string
           style: form
           explode: true
-          description: Repeatable URL-encoded JSON filter payload.
+          description: Repeatable URL-encoded JSON filter payloads.
       responses:
         "200":
           description: Event list.
