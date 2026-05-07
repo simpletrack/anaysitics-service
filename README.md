@@ -85,7 +85,10 @@ If same-process ingestion is enabled, `ANALYTICS_SERVICE_SOURCES_JSON` is still
 required as the startup schema surface for enabled sources, and HTTP-resolved
 sources outside that startup surface are rejected.
 
-When query mode is enabled, the service also exposes internal readback routes:
+When query mode is enabled, the service also exposes internal readback routes.
+Here, readback means trusted server-side queries that read already accepted
+analytics events back from storage for Realtime and Events screens; it is not a
+browser-facing collection API or event replay:
 
 - `GET /v1/realtime`
 - `GET /v1/events`

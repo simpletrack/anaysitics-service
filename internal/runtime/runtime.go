@@ -54,8 +54,8 @@ func New(cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 
-	// Build the internal query reader only when the runtime is configured to
-	// serve Events / Realtime readback over ClickHouse.
+	// Build the internal query reader only when trusted server-side readback is
+	// configured to serve Events / Realtime queries over ClickHouse.
 	queryReader, queryClosers, err := newQueryReader(cfg)
 	if err != nil {
 		_ = closeAll(closers)
@@ -159,7 +159,7 @@ func newQueryReader(cfg config.Config) (storage.EventReader, []io.Closer, error)
 	}
 
 	// Open a ClickHouse read connection only when the runtime is expected to
-	// serve Events and Realtime readback.
+	// serve trusted Events and Realtime readback.
 	startupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	queryDB, queryCloser, err := openClickHouseQuery(startupCtx, cfg)
