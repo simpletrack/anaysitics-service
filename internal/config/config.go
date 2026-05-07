@@ -12,17 +12,21 @@ import (
 )
 
 const (
-	defaultAddr        = ":8080"
-	defaultCollectPath = "/collect"
-	defaultHealthPath  = "/healthz"
-	defaultTrackerPath = "/tracker.js"
-	defaultTrackerFile = "public/tracker.js"
-	defaultEventBus    = "redis"
-	defaultRedisStream = "analytics.events"
-	defaultDeadLetters = "analytics.events.dead"
-	defaultWorkerGroup = "simpletrack-anaysitics-service"
-	defaultTablePrefix = "events"
-	defaultResolver    = "memory"
+	defaultAddr         = ":8080"
+	defaultCollectPath  = "/collect"
+	defaultHealthPath   = "/healthz"
+	defaultTrackerPath  = "/tracker.js"
+	defaultEventsPath   = "/v1/events"
+	defaultRealtimePath = "/v1/realtime"
+	defaultSwaggerPath  = "/swagger"
+	defaultOpenAPIFile  = "api/openapi.yaml"
+	defaultTrackerFile  = "public/tracker.js"
+	defaultEventBus     = "redis"
+	defaultRedisStream  = "analytics.events"
+	defaultDeadLetters  = "analytics.events.dead"
+	defaultWorkerGroup  = "simpletrack-anaysitics-service"
+	defaultTablePrefix  = "events"
+	defaultResolver     = "memory"
 )
 
 // QueryTokenCredential describes one internal readback bearer token and its lifecycle window.
@@ -35,10 +39,15 @@ type QueryTokenCredential struct {
 
 // Config contains process-level runtime settings.
 type Config struct {
-	Addr                              string                      // Addr is the fasthttp listen address
+	Addr                              string                      // Addr is the Fiber listen address
 	CollectPath                       string                      // CollectPath is the event reporting route
 	HealthPath                        string                      // HealthPath is the health check route
 	TrackerPath                       string                      // TrackerPath is the browser tracker route
+	EventsPath                        string                      // EventsPath is the internal Events readback route
+	RealtimePath                      string                      // RealtimePath is the internal Realtime readback route
+	SwaggerEnabled                    bool                        // SwaggerEnabled exposes OpenAPI documentation routes
+	SwaggerPath                       string                      // SwaggerPath is the Swagger UI route prefix
+	OpenAPIFile                       string                      // OpenAPIFile is the local OpenAPI YAML or JSON file
 	TrackerFile                       string                      // TrackerFile is the local JavaScript asset path
 	TrustForwardedHeaders             bool                        // TrustForwardedHeaders enables proxy-provided client IP headers
 	EventBus                          string                      // EventBus selects the runtime queue backend, usually redis
@@ -81,11 +90,16 @@ func LoadFromEnv() (Config, error) {
 	// Load route and queue defaults first so startup behavior is deterministic
 	// before any control-plane source config is decoded.
 	config := Config{
-		Addr:        envString("ANALYTICS_SERVICE_ADDR", defaultAddr),
-		CollectPath: envString("ANALYTICS_SERVICE_COLLECT_PATH", defaultCollectPath),
-		HealthPath:  envString("ANALYTICS_SERVICE_HEALTH_PATH", defaultHealthPath),
-		TrackerPath: envString("ANALYTICS_SERVICE_TRACKER_PATH", defaultTrackerPath),
-		TrackerFile: envString("ANALYTICS_SERVICE_TRACKER_FILE", defaultTrackerFile),
+		Addr:           envString("ANALYTICS_SERVICE_ADDR", defaultAddr),
+		CollectPath:    envString("ANALYTICS_SERVICE_COLLECT_PATH", defaultCollectPath),
+		HealthPath:     envString("ANALYTICS_SERVICE_HEALTH_PATH", defaultHealthPath),
+		TrackerPath:    envString("ANALYTICS_SERVICE_TRACKER_PATH", defaultTrackerPath),
+		EventsPath:     envString("ANALYTICS_SERVICE_EVENTS_PATH", defaultEventsPath),
+		RealtimePath:   envString("ANALYTICS_SERVICE_REALTIME_PATH", defaultRealtimePath),
+		SwaggerEnabled: envBool("ANALYTICS_SERVICE_SWAGGER_ENABLED", false),
+		SwaggerPath:    envString("ANALYTICS_SERVICE_SWAGGER_PATH", defaultSwaggerPath),
+		OpenAPIFile:    envString("ANALYTICS_SERVICE_OPENAPI_FILE", defaultOpenAPIFile),
+		TrackerFile:    envString("ANALYTICS_SERVICE_TRACKER_FILE", defaultTrackerFile),
 		TrustForwardedHeaders: envBool(
 			"ANALYTICS_SERVICE_TRUST_FORWARDED_HEADERS",
 			false,

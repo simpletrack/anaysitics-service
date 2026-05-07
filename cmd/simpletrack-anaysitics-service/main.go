@@ -10,7 +10,6 @@ import (
 
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/runtime"
-	"github.com/valyala/fasthttp"
 )
 
 func main() {
@@ -34,19 +33,18 @@ func main() {
 	}()
 
 	// Use one cancellation context for both HTTP shutdown and worker shutdown so
-	// Redis blocking reads and fasthttp serving stop together on process signals.
+	// Redis blocking reads and Fiber serving stop together on process signals.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	app.Start(ctx)
 
 	// Start HTTP in the background so the process can also react to ingestion
 	// worker failures instead of serving collect while storage is down.
-	server := &fasthttp.Server{Handler: app.Handler()}
 	serverErr := make(chan error, 1)
 	go func() {
-		// ListenAndServe owns the public HTTP lifecycle while the optional
+		// Listen owns the public HTTP lifecycle while the optional
 		// ingestion worker runs under the same process cancellation context.
-		serverErr <- server.ListenAndServe(cfg.Addr)
+		serverErr <- app.App().Listen(cfg.Addr)
 	}()
 
 	select {
@@ -58,13 +56,13 @@ func main() {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Fatalf("run ingestion worker: %v", err)
 		}
-		if err := server.Shutdown(); err != nil {
+		if err := app.App().Shutdown(); err != nil {
 			log.Printf("shutdown server after worker stop: %v", err)
 		}
 	case <-ctx.Done():
 		// Shutdown stops accepting HTTP requests; cancelling ctx also lets the
 		// worker leave Redis blocking reads and return context.Canceled.
-		if err := server.Shutdown(); err != nil {
+		if err := app.App().Shutdown(); err != nil {
 			log.Printf("shutdown server: %v", err)
 		}
 		if err := <-serverErr; err != nil {

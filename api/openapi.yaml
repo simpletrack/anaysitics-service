@@ -1,0 +1,371 @@
+openapi: 3.0.3
+info:
+  title: SimpleTrack Analytics Service API
+  version: 0.1.0
+  description: HTTP API for event collection, tracker delivery, health checks, and internal readback.
+paths:
+  /healthz:
+    get:
+      summary: Check service health.
+      responses:
+        "200":
+          description: The service process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /tracker.js:
+    get:
+      summary: Return the browser tracker script.
+      responses:
+        "200":
+          description: Tracker JavaScript asset.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/javascript:
+              schema:
+                type: string
+        "404":
+          description: Tracker script is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /collect:
+    options:
+      summary: CORS preflight for event collection.
+      responses:
+        "204":
+          description: Preflight accepted by Fiber CORS middleware.
+    post:
+      summary: Accept one analytics event.
+      parameters:
+        - in: header
+          name: X-SimpleTrack-Write-Key
+          schema:
+            type: string
+          required: false
+        - in: header
+          name: Authorization
+          schema:
+            type: string
+          required: false
+          description: Bearer write key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectRequest"
+      responses:
+        "202":
+          description: Event accepted or intentionally filtered before publish.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptedResponse"
+        "400":
+          description: Invalid JSON or validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid write key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Source disabled or origin not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal collect failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/realtime:
+    get:
+      summary: Read recent accepted events for one source.
+      parameters:
+        - $ref: "#/components/parameters/WriteKey"
+        - $ref: "#/components/parameters/QueryAuthorization"
+        - in: query
+          name: since
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+      responses:
+        "200":
+          description: Recent events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RealtimeResponse"
+        "400":
+          description: Invalid query parameter or missing write key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing, expired, not-yet-valid, or unknown query token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Origin is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Query API is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/events:
+    get:
+      summary: List accepted events for one source and time range.
+      parameters:
+        - $ref: "#/components/parameters/WriteKey"
+        - $ref: "#/components/parameters/QueryAuthorization"
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: event_name
+          schema:
+            type: string
+        - in: query
+          name: distinct_id
+          schema:
+            type: string
+        - in: query
+          name: sort_field
+          schema:
+            type: string
+            enum: [event_time, received_at]
+        - in: query
+          name: sort_direction
+          schema:
+            type: string
+            enum: [asc, desc]
+        - in: query
+          name: property_filter
+          schema:
+            type: string
+          style: form
+          explode: true
+          description: Repeatable URL-encoded JSON filter payload.
+      responses:
+        "200":
+          description: Event list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventsResponse"
+        "400":
+          description: Invalid query parameter, filter, or missing write key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing, expired, not-yet-valid, or unknown query token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Origin is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Query API is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  parameters:
+    WriteKey:
+      in: query
+      name: write_key
+      required: true
+      schema:
+        type: string
+    QueryAuthorization:
+      in: header
+      name: Authorization
+      required: true
+      schema:
+        type: string
+      description: Bearer query token.
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    AcceptedResponse:
+      type: object
+      required: [id, received_at]
+      properties:
+        id:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        filtered:
+          type: boolean
+    CollectRequest:
+      type: object
+      required: [event_name, distinct_id]
+      properties:
+        write_key:
+          type: string
+        id:
+          type: string
+        event_name:
+          type: string
+        distinct_id:
+          type: string
+        event_time:
+          type: string
+          format: date-time
+        properties:
+          type: object
+          additionalProperties: true
+        user_properties:
+          type: object
+          additionalProperties: true
+    SourceResponse:
+      type: object
+      required: [tenant_id, project_id, source_id, source_type]
+      properties:
+        tenant_id:
+          type: string
+        project_id:
+          type: string
+        source_id:
+          type: string
+        source_type:
+          type: string
+    EventItem:
+      type: object
+      required: [id, tenant_id, project_id, source_id, source_type, event_name, distinct_id, event_time, received_at]
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        project_id:
+          type: string
+        source_id:
+          type: string
+        source_type:
+          type: string
+        event_name:
+          type: string
+        distinct_id:
+          type: string
+        session_id:
+          type: string
+        visit_id:
+          type: string
+        event_time:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        properties:
+          type: object
+          additionalProperties: true
+        user_properties:
+          type: object
+          additionalProperties: true
+        source:
+          type: string
+    RealtimeResponse:
+      type: object
+      required: [source, items, since, limit]
+      properties:
+        source:
+          $ref: "#/components/schemas/SourceResponse"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventItem"
+        since:
+          type: string
+          format: date-time
+        limit:
+          type: integer
+    EventsResponse:
+      type: object
+      required: [source, items, limit, offset, from, to]
+      properties:
+        source:
+          $ref: "#/components/schemas/SourceResponse"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventItem"
+        limit:
+          type: integer
+        offset:
+          type: integer
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time

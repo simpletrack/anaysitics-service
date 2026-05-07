@@ -8,12 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofiber/contrib/v3/swaggerui"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/simpletrack/analytics-core/collect"
 	"github.com/simpletrack/analytics-core/contracts"
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
-	"github.com/valyala/fasthttp"
 )
 
 const contentTypeJSON = "application/json"
@@ -23,6 +25,11 @@ type Options struct {
 	CollectPath           string                // CollectPath is the POST route used by browser and server SDKs
 	HealthPath            string                // HealthPath is the GET route used by process health checks
 	TrackerPath           string                // TrackerPath is the GET route used to serve the browser tracker
+	EventsPath            string                // EventsPath is the GET route used by internal Events readback
+	RealtimePath          string                // RealtimePath is the GET route used by internal Realtime readback
+	SwaggerEnabled        bool                  // SwaggerEnabled exposes the generated OpenAPI documentation UI
+	SwaggerPath           string                // SwaggerPath is the Fiber route prefix for Swagger UI
+	OpenAPIFile           string                // OpenAPIFile is the local OpenAPI YAML or JSON file served by Swagger UI
 	TrustForwardedHeaders bool                  // TrustForwardedHeaders enables proxy-provided client address headers
 	TrackerScript         []byte                // TrackerScript is the JavaScript asset returned by TrackerPath
 	Now                   collect.Clock         // Now supplies deterministic receive time for tests
@@ -34,7 +41,7 @@ type Options struct {
 	QueryCredentials      []QueryCredential     // QueryCredentials are accepted internal readback tokens with lifecycle metadata
 }
 
-// Handler routes health, tracker, and collect requests.
+// Handler routes health, tracker, collect, query, and documentation requests.
 type Handler struct {
 	opts Options // opts stores dependencies and route paths
 }
@@ -51,8 +58,31 @@ type ErrorResponse struct {
 	Error string `json:"error"` // Error is the stable error summary
 }
 
-// NewHandler creates an analytics runtime HTTP handler.
-func NewHandler(opts Options) (*Handler, error) {
+// NewApp creates a Fiber app for the analytics service HTTP boundary.
+func NewApp(opts Options) (*fiber.App, error) {
+	h, err := newHandler(opts)
+	if err != nil {
+		return nil, err
+	}
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(ctx fiber.Ctx, err error) error {
+			log.Printf("fiber request failed: %v", err)
+			return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
+		},
+	})
+	app.Use(cors.New(cors.Config{
+		AllowOriginsFunc: func(origin string) bool {
+			return strings.TrimSpace(origin) != ""
+		},
+		AllowMethods: []string{fiber.MethodGet, fiber.MethodPost, fiber.MethodOptions},
+		AllowHeaders: []string{"Content-Type", "Authorization", "X-SimpleTrack-Write-Key"},
+		MaxAge:       600,
+	}))
+	h.registerRoutes(app)
+	return app, nil
+}
+
+func newHandler(opts Options) (*Handler, error) {
 	if opts.CollectPath == "" {
 		opts.CollectPath = "/collect"
 	}
@@ -61,6 +91,15 @@ func NewHandler(opts Options) (*Handler, error) {
 	}
 	if opts.TrackerPath == "" {
 		opts.TrackerPath = "/tracker.js"
+	}
+	if opts.EventsPath == "" {
+		opts.EventsPath = "/v1/events"
+	}
+	if opts.RealtimePath == "" {
+		opts.RealtimePath = "/v1/realtime"
+	}
+	if opts.SwaggerPath == "" {
+		opts.SwaggerPath = "/swagger"
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -78,59 +117,84 @@ func NewHandler(opts Options) (*Handler, error) {
 	if opts.QueryReader != nil && len(opts.QueryCredentials) == 0 {
 		return nil, errors.New("query token is required when query reader is configured")
 	}
+	if err := validateRoutePaths(opts); err != nil {
+		return nil, err
+	}
 	return &Handler{opts: opts}, nil
 }
 
-// ServeFastHTTP handles one fasthttp request.
-func (h *Handler) ServeFastHTTP(ctx *fasthttp.RequestCtx) {
-	path := string(ctx.Path())
-	switch {
-	case ctx.IsGet() && path == h.opts.HealthPath:
-		h.writeJSON(ctx, fasthttp.StatusOK, map[string]string{"status": "ok"})
-	case ctx.IsGet() && path == h.opts.TrackerPath:
-		h.writeTracker(ctx)
-	case ctx.IsOptions() && path == h.opts.CollectPath:
-		h.writePreflight(ctx)
-	case ctx.IsOptions() && (path == queryRealtimePath || path == queryEventsPath):
-		h.handleQueryPreflight(ctx)
-	case ctx.IsPost() && path == h.opts.CollectPath:
-		h.handleCollect(ctx)
-	case ctx.IsGet() && path == queryRealtimePath:
-		h.handleRealtime(ctx)
-	case ctx.IsGet() && path == queryEventsPath:
-		h.handleEvents(ctx)
-	default:
-		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
+func validateRoutePaths(opts Options) error {
+	paths := map[string]string{
+		"collect path":  opts.CollectPath,
+		"health path":   opts.HealthPath,
+		"tracker path":  opts.TrackerPath,
+		"events path":   opts.EventsPath,
+		"realtime path": opts.RealtimePath,
 	}
+	if opts.SwaggerEnabled {
+		paths["swagger path"] = opts.SwaggerPath
+	}
+	seen := map[string]string{}
+	for name, path := range paths {
+		if strings.TrimSpace(path) == "" || !strings.HasPrefix(path, "/") {
+			return errors.New(name + " must start with /")
+		}
+		if prior := seen[path]; prior != "" {
+			return errors.New(name + " conflicts with " + prior)
+		}
+		seen[path] = name
+	}
+	if opts.SwaggerEnabled && strings.TrimSpace(opts.OpenAPIFile) == "" {
+		return errors.New("openapi file is required when swagger is enabled")
+	}
+	return nil
 }
 
-func (h *Handler) handleCollect(ctx *fasthttp.RequestCtx) {
+func (h *Handler) registerRoutes(app *fiber.App) {
+	app.Get(h.opts.HealthPath, h.handleHealth)
+	app.Get(h.opts.TrackerPath, h.writeTracker)
+	app.Post(h.opts.CollectPath, h.handleCollect)
+	app.Get(h.opts.RealtimePath, h.handleRealtime)
+	app.Get(h.opts.EventsPath, h.handleEvents)
+	if h.opts.SwaggerEnabled {
+		app.Use(h.opts.SwaggerPath, swaggerui.New(swaggerui.Config{
+			BasePath: h.opts.SwaggerPath,
+			FilePath: h.opts.OpenAPIFile,
+			Title:    "SimpleTrack Analytics Service API",
+		}))
+	}
+	app.Use(func(ctx fiber.Ctx) error {
+		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
+	})
+}
+
+func (h *Handler) handleHealth(ctx fiber.Ctx) error {
+	return h.writeJSON(ctx, fiber.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleCollect(ctx fiber.Ctx) error {
 	// Decode the public request body first. Invalid JSON never reaches source
 	// resolution or analytics-core validation because it is not a collect event.
 	var payload collectPayload
-	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: "invalid collect payload"})
-		return
+	if err := json.Unmarshal(ctx.Body(), &payload); err != nil {
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: "invalid collect payload"})
 	}
 
 	// Resolve the runtime source before normalizing analytics identifiers. The
 	// write key selects a SaaS-managed source config but does not let the client
 	// choose tenant, project, source, or source type.
 	writeKey := h.writeKey(ctx, payload.WriteKey)
-	source, err := h.opts.Resolver.ResolveSource(ctx, writeKey)
+	source, err := h.opts.Resolver.ResolveSource(ctx.Context(), writeKey)
 	if err != nil {
-		h.writeResolveError(ctx, err)
-		return
+		return h.writeResolveError(ctx, err)
 	}
 
 	// Enforce browser origin policy before building the analytics-core request.
 	// A blocked origin is rejected and never enters queue, storage, or audit
 	// paths as an accepted event.
 	if !source.AllowsOrigin(requestOrigin(ctx)) {
-		h.writeJSON(ctx, fasthttp.StatusForbidden, ErrorResponse{Error: "origin is not allowed"})
-		return
+		return h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "origin is not allowed"})
 	}
-	h.writeCORS(ctx, requestOrigin(ctx))
 
 	// Override all client-supplied scope fields with the control-plane runtime
 	// config. This is the key trust boundary between public SDK payloads and
@@ -148,8 +212,7 @@ func (h *Handler) handleCollect(ctx *fasthttp.RequestCtx) {
 	stages, err := h.stages(source)
 	if err != nil {
 		log.Printf("build collect stages: %v", err)
-		h.writeJSON(ctx, fasthttp.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
-		return
+		return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
 	}
 
 	// Build the analytics-core handler after runtime enforcement has sealed the
@@ -157,21 +220,19 @@ func (h *Handler) handleCollect(ctx *fasthttp.RequestCtx) {
 	handler, err := collect.NewHandlerWithOptions(h.opts.Bus, h.opts.Now, collect.WithStages(stages...))
 	if err != nil {
 		log.Printf("build collect handler: %v", err)
-		h.writeJSON(ctx, fasthttp.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
-		return
+		return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
 	}
 
 	// Publish through analytics-core. Validation errors are safe to expose;
 	// queue/runtime errors are hidden behind a stable 5xx response.
-	envelope, err := handler.Handle(ctx, request)
+	envelope, err := handler.Handle(ctx.Context(), request)
 	if err != nil {
-		h.writeCollectError(ctx, envelope, err)
-		return
+		return h.writeCollectError(ctx, envelope, err)
 	}
 
 	// Return acceptance only after EventBus.Publish succeeds. For the default
 	// Redis runtime this means the event has reached the configured stream.
-	h.writeJSON(ctx, fasthttp.StatusAccepted, AcceptedResponse{
+	return h.writeJSON(ctx, fiber.StatusAccepted, AcceptedResponse{
 		ID:         envelope.ID,
 		ReceivedAt: envelope.ReceivedAt.Format(time.RFC3339Nano),
 	})
@@ -221,120 +282,96 @@ func (h *Handler) stages(source controlplane.SourceConfig) ([]collect.Stage, err
 	return stages, nil
 }
 
-func (h *Handler) writeCollectError(ctx *fasthttp.RequestCtx, envelope contracts.EventEnvelope, err error) {
+func (h *Handler) writeCollectError(ctx fiber.Ctx, envelope contracts.EventEnvelope, err error) error {
 	var filteredErr collect.FilteredError
 	if errors.As(err, &filteredErr) {
 		if envelope.ID == "" {
 			envelope = filteredErr.Envelope
 		}
-		h.writeJSON(ctx, fasthttp.StatusAccepted, AcceptedResponse{
+		return h.writeJSON(ctx, fiber.StatusAccepted, AcceptedResponse{
 			ID:         envelope.ID,
 			ReceivedAt: envelope.ReceivedAt.Format(time.RFC3339Nano),
 			Filtered:   true,
 		})
-		return
 	}
 
 	var validationErr collect.ValidationError
 	if errors.As(err, &validationErr) {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: validationErr.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: validationErr.Error()})
 	}
 	log.Printf("collect publish failed: %v", err)
-	h.writeJSON(ctx, fasthttp.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
+	return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
 }
 
-func (h *Handler) writeResolveError(ctx *fasthttp.RequestCtx, err error) {
+func (h *Handler) writeResolveError(ctx fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, controlplane.ErrSourceNotFound):
-		h.writeJSON(ctx, fasthttp.StatusUnauthorized, ErrorResponse{Error: "invalid write key"})
+		return h.writeJSON(ctx, fiber.StatusUnauthorized, ErrorResponse{Error: "invalid write key"})
 	case errors.Is(err, controlplane.ErrSourceDisabled):
-		h.writeJSON(ctx, fasthttp.StatusForbidden, ErrorResponse{Error: "source is disabled"})
+		return h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "source is disabled"})
 	default:
 		log.Printf("resolve source failed: %v", err)
-		h.writeJSON(ctx, fasthttp.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
+		return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
 	}
 }
 
-func (h *Handler) writePreflight(ctx *fasthttp.RequestCtx) {
-	// Preflight cannot prove write-key ownership because browsers do not send
-	// the eventual request body. POST still performs the authoritative source
-	// and origin checks before analytics-core sees the event.
-	h.writeCORS(ctx, requestOrigin(ctx))
-	ctx.Response.Header.Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, X-SimpleTrack-Write-Key, Authorization")
-	ctx.Response.Header.Set("Access-Control-Max-Age", "600")
-	ctx.SetStatusCode(fasthttp.StatusNoContent)
-}
-
-func (h *Handler) writeTracker(ctx *fasthttp.RequestCtx) {
+func (h *Handler) writeTracker(ctx fiber.Ctx) error {
 	if len(h.opts.TrackerScript) == 0 {
-		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "tracker script is not configured"})
-		return
+		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "tracker script is not configured"})
 	}
-	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.Response.Header.SetContentType("application/javascript; charset=utf-8")
-	ctx.Response.Header.Set("Cache-Control", "public, max-age=300")
-	ctx.SetBody(h.opts.TrackerScript)
+	ctx.Set("Content-Type", "application/javascript; charset=utf-8")
+	ctx.Set("Cache-Control", "public, max-age=300")
+	return ctx.Status(fiber.StatusOK).Send(h.opts.TrackerScript)
 }
 
-func (h *Handler) writeJSON(ctx *fasthttp.RequestCtx, statusCode int, response any) {
-	ctx.SetStatusCode(statusCode)
-	ctx.Response.Header.SetContentType(contentTypeJSON)
-	payload, err := json.Marshal(response)
-	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.SetBodyString(`{"error":"failed to encode response"}`)
-		return
-	}
-	ctx.SetBody(payload)
+func (h *Handler) writeJSON(ctx fiber.Ctx, statusCode int, response any) error {
+	return ctx.Status(statusCode).JSON(response, contentTypeJSON)
 }
 
-func (h *Handler) writeCORS(ctx *fasthttp.RequestCtx, origin string) {
-	ctx.Response.Header.Set("Vary", "Origin")
-	if origin != "" {
-		ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
-	}
-}
-
-func (h *Handler) writeKey(ctx *fasthttp.RequestCtx, bodyValue string) string {
-	if value := strings.TrimSpace(string(ctx.Request.Header.Peek("X-SimpleTrack-Write-Key"))); value != "" {
+func (h *Handler) writeKey(ctx fiber.Ctx, bodyValue string) string {
+	// Prefer explicit transport credentials over body fallback. The accepted
+	// sources, in priority order, are:
+	//  1. X-SimpleTrack-Write-Key: wk_header
+	//  2. Authorization: Bearer wk_bearer
+	//  3. ?write_key=wk_query
+	//  4. JSON body write_key, passed here as bodyValue
+	//
+	// This lets browser SDKs, server SDKs, and quick manual tests use different
+	// carriers while keeping one resolver boundary for tenant/project/source.
+	if value := strings.TrimSpace(ctx.Get("X-SimpleTrack-Write-Key")); value != "" {
 		return value
 	}
-	if value := bearerToken(string(ctx.Request.Header.Peek("Authorization"))); value != "" {
+	if value := bearerToken(ctx.Get("Authorization")); value != "" {
 		return value
 	}
-	if value := strings.TrimSpace(string(ctx.QueryArgs().Peek("write_key"))); value != "" {
+	if value := strings.TrimSpace(ctx.Query("write_key")); value != "" {
 		return value
 	}
 	return strings.TrimSpace(bodyValue)
 }
 
-func (h *Handler) clientInfo(ctx *fasthttp.RequestCtx) collect.ClientInfo {
+func (h *Handler) clientInfo(ctx fiber.Ctx) collect.ClientInfo {
 	return collect.ClientInfo{
-		UserAgent: string(ctx.UserAgent()),
+		UserAgent: ctx.Get("User-Agent"),
 		IP:        h.clientIP(ctx),
-		Referrer:  string(ctx.Request.Header.Peek("Referer")),
+		Referrer:  ctx.Get("Referer"),
 	}
 }
 
-func (h *Handler) clientIP(ctx *fasthttp.RequestCtx) string {
+func (h *Handler) clientIP(ctx fiber.Ctx) string {
 	if h.opts.TrustForwardedHeaders {
-		if forwarded := firstHeaderValue(ctx.Request.Header.Peek("X-Forwarded-For")); forwarded != "" {
+		if forwarded := firstHeaderValue(ctx.Get("X-Forwarded-For")); forwarded != "" {
 			if addr := canonicalClientIP(forwarded); addr != "" {
 				return addr
 			}
 		}
-		if realIP := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP"))); realIP != "" {
+		if realIP := strings.TrimSpace(ctx.Get("X-Real-IP")); realIP != "" {
 			if addr := canonicalClientIP(realIP); addr != "" {
 				return addr
 			}
 		}
 	}
-	if remoteIP := ctx.RemoteIP(); remoteIP != nil {
-		return canonicalClientIP(remoteIP.String())
-	}
-	return ""
+	return canonicalClientIP(ctx.IP())
 }
 
 type collectPayload struct {
@@ -342,8 +379,8 @@ type collectPayload struct {
 	WriteKey string `json:"write_key"` // WriteKey is the runtime source secret, never trusted for tenant mapping
 }
 
-func requestOrigin(ctx *fasthttp.RequestCtx) string {
-	return strings.TrimSpace(string(ctx.Request.Header.Peek("Origin")))
+func requestOrigin(ctx fiber.Ctx) string {
+	return strings.TrimSpace(ctx.Get("Origin"))
 }
 
 func bearerToken(value string) string {
@@ -354,8 +391,8 @@ func bearerToken(value string) string {
 	return strings.TrimSpace(value[len("Bearer "):])
 }
 
-func firstHeaderValue(value []byte) string {
-	text := strings.TrimSpace(string(value))
+func firstHeaderValue(value string) string {
+	text := strings.TrimSpace(value)
 	if comma := strings.IndexByte(text, ','); comma >= 0 {
 		return strings.TrimSpace(text[:comma])
 	}
@@ -376,5 +413,3 @@ func canonicalClientIP(value string) string {
 	}
 	return addrPort.Addr().String()
 }
-
-var _ fasthttp.RequestHandler = (&Handler{}).ServeFastHTTP

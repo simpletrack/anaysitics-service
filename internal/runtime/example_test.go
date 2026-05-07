@@ -17,7 +17,7 @@ func ExampleNew() {
 		return
 	}
 	defer app.Close()
-	fmt.Println(app.Handler() != nil)
+	fmt.Println(app.App() != nil)
 	// Output: true
 }
 

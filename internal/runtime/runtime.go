@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
 	"github.com/redis/go-redis/v9"
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/eventbus/redisstream"
@@ -16,17 +17,16 @@ import (
 	"github.com/simpletrack/analytics-service/internal/collectapi"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
-	"github.com/valyala/fasthttp"
 	gormclickhouse "gorm.io/driver/clickhouse"
 	"gorm.io/gorm"
 )
 
 // Runtime owns the assembled analytics data-plane dependencies.
 type Runtime struct {
-	handler   fasthttp.RequestHandler // handler serves health, tracker, preflight, and collect routes
-	processor *ingestion.Processor    // processor consumes Redis Stream messages when ingestion is enabled
-	closers   []io.Closer             // closers release network clients opened by the runtime assembly
-	worker    chan error              // worker receives the optional ingestion worker terminal error
+	app       *fiber.App           // app serves health, tracker, collect, query, and documentation routes
+	processor *ingestion.Processor // processor consumes Redis Stream messages when ingestion is enabled
+	closers   []io.Closer          // closers release network clients opened by the runtime assembly
+	worker    chan error           // worker receives the optional ingestion worker terminal error
 }
 
 // New assembles the runtime without starting background workers.
@@ -64,11 +64,16 @@ func New(cfg config.Config) (*Runtime, error) {
 	closers = append(closers, queryClosers...)
 
 	// Wire HTTP to runtime enforcement and analytics-core collect handling. The
-	// handler remains unaware of SaaS control-plane CRUD and storage adapters.
-	handler, err := collectapi.NewHandler(collectapi.Options{
+	// app remains unaware of SaaS control-plane CRUD and storage adapters.
+	app, err := collectapi.NewApp(collectapi.Options{
 		CollectPath:           cfg.CollectPath,
 		HealthPath:            cfg.HealthPath,
 		TrackerPath:           cfg.TrackerPath,
+		EventsPath:            cfg.EventsPath,
+		RealtimePath:          cfg.RealtimePath,
+		SwaggerEnabled:        cfg.SwaggerEnabled,
+		SwaggerPath:           cfg.SwaggerPath,
+		OpenAPIFile:           cfg.OpenAPIFile,
 		TrustForwardedHeaders: cfg.TrustForwardedHeaders,
 		TrackerScript:         tracker,
 		Resolver:              resolver,
@@ -97,15 +102,15 @@ func New(cfg config.Config) (*Runtime, error) {
 	}
 
 	return &Runtime{
-		handler:   handler.ServeFastHTTP,
+		app:       app,
 		processor: processor,
 		closers:   closers,
 	}, nil
 }
 
-// Handler returns the fasthttp handler owned by the runtime.
-func (r *Runtime) Handler() fasthttp.RequestHandler {
-	return r.handler
+// App returns the Fiber app owned by the runtime.
+func (r *Runtime) App() *fiber.App {
+	return r.app
 }
 
 // Start launches optional background runtime workers.

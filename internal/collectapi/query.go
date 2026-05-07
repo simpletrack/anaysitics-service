@@ -9,19 +9,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
-	"github.com/valyala/fasthttp"
 )
 
 const (
-	queryRealtimePath        = "/v1/realtime"
-	queryEventsPath          = "/v1/events"
 	defaultRealtimeWindow    = 30 * time.Minute
 	defaultRealtimeQueryCap  = 50
 	defaultEventsQueryCap    = 100
 	defaultPropertyFilterCap = 5
-	queryAllowHeaders        = "Content-Type, Authorization, X-SimpleTrack-Write-Key"
 )
 
 type querySourceResponse struct {
@@ -72,42 +69,38 @@ type propertyFilterPayload struct {
 	Value    any    `json:"value"`
 }
 
-func (h *Handler) handleRealtime(ctx *fasthttp.RequestCtx) {
+func (h *Handler) handleRealtime(ctx fiber.Ctx) error {
 	// Reject read routes when query support is not assembled. This keeps the
 	// runtime shape explicit instead of surfacing a half-configured internal API.
 	if h.opts.QueryReader == nil {
-		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
-		return
+		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 	}
-	h.writeQueryCORS(ctx)
 	decision, ok := h.requireQueryToken(ctx)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Resolve the runtime source first so the internal read API stays scoped to
 	// the same write-key boundary as collect.
 	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Realtime uses a short recent window. Default to a 30 minute window when
 	// the caller does not pin an explicit since timestamp.
 	since, err := parseQueryTimeOrDefault(ctx, "since", h.opts.Now().Add(-defaultRealtimeWindow))
 	if err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	}
 	limit, err := parseQueryLimitOrDefault(ctx, "limit", defaultRealtimeQueryCap)
 	if err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	}
 
 	// Execute through analytics-core so the service only owns HTTP decoding and
 	// response shaping, not query semantics.
-	records, err := h.opts.QueryReader.ListRealtime(ctx, storage.RealtimeQuery{
+	records, err := h.opts.QueryReader.ListRealtime(ctx.Context(), storage.RealtimeQuery{
 		TenantID:  source.TenantID,
 		ProjectID: source.ProjectID,
 		SourceID:  source.SourceID,
@@ -115,11 +108,10 @@ func (h *Handler) handleRealtime(ctx *fasthttp.RequestCtx) {
 		Limit:     limit,
 	})
 	if err != nil {
-		h.writeQueryError(ctx, err)
-		return
+		return h.writeQueryError(ctx, err)
 	}
 
-	h.writeJSON(ctx, fasthttp.StatusOK, queryRealtimeResponse{
+	return h.writeJSON(ctx, fiber.StatusOK, queryRealtimeResponse{
 		Source: toQuerySourceResponse(source),
 		Items:  toQueryEventResponses(records),
 		Since:  since.UTC().Format(time.RFC3339Nano),
@@ -127,77 +119,69 @@ func (h *Handler) handleRealtime(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-func (h *Handler) handleEvents(ctx *fasthttp.RequestCtx) {
+func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 	// Reject read routes when query support is not assembled. This keeps the
 	// runtime shape explicit instead of surfacing a half-configured internal API.
 	if h.opts.QueryReader == nil {
-		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
-		return
+		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 	}
-	h.writeQueryCORS(ctx)
 	decision, ok := h.requireQueryToken(ctx)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Resolve the runtime source first so readback cannot be pointed at a
 	// different tenant/project/source than the write-key boundary.
 	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Events requires an explicit time range to keep the service from turning a
 	// dashboard request into an open-ended historical scan.
 	from, err := parseRequiredQueryTime(ctx, "from")
 	if err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	}
 	to, err := parseRequiredQueryTime(ctx, "to")
 	if err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	}
 	limit, err := parseQueryLimitOrDefault(ctx, "limit", defaultEventsQueryCap)
 	if err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	}
 	offset, err := parseQueryIntOrDefault(ctx, "offset", 0)
 	if err != nil {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
-		return
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	}
 	propertyFilters, err := parsePropertyFilters(ctx, source)
 	if err != nil {
-		h.writeQueryError(ctx, err)
-		return
+		return h.writeQueryError(ctx, err)
 	}
 
 	// Let analytics-core own the allowlisted sort and filter semantics. The
 	// service only maps the public query string into the core request contract.
-	records, err := h.opts.QueryReader.ListEvents(ctx, storage.EventListQuery{
+	records, err := h.opts.QueryReader.ListEvents(ctx.Context(), storage.EventListQuery{
 		TenantID:                 source.TenantID,
 		ProjectID:                source.ProjectID,
 		SourceID:                 source.SourceID,
-		EventName:                strings.TrimSpace(string(ctx.QueryArgs().Peek("event_name"))),
-		DistinctID:               strings.TrimSpace(string(ctx.QueryArgs().Peek("distinct_id"))),
+		EventName:                strings.TrimSpace(ctx.Query("event_name")),
+		DistinctID:               strings.TrimSpace(ctx.Query("distinct_id")),
 		From:                     from,
 		To:                       to,
 		Limit:                    limit,
 		Offset:                   offset,
-		SortField:                storage.EventSortField(strings.TrimSpace(string(ctx.QueryArgs().Peek("sort_field")))),
-		SortDirection:            storage.EventSortDirection(strings.TrimSpace(string(ctx.QueryArgs().Peek("sort_direction")))),
+		SortField:                storage.EventSortField(strings.TrimSpace(ctx.Query("sort_field"))),
+		SortDirection:            storage.EventSortDirection(strings.TrimSpace(ctx.Query("sort_direction"))),
 		PropertyFilters:          propertyFilters,
 		AllowedPropertySelectors: toPropertySelectors(source.AllowedPropertyFilters),
 	})
 	if err != nil {
-		h.writeQueryError(ctx, err)
-		return
+		return h.writeQueryError(ctx, err)
 	}
 
-	h.writeJSON(ctx, fasthttp.StatusOK, queryEventsResponse{
+	return h.writeJSON(ctx, fiber.StatusOK, queryEventsResponse{
 		Source: toQuerySourceResponse(source),
 		Items:  toQueryEventResponses(records),
 		Limit:  limit,
@@ -207,66 +191,48 @@ func (h *Handler) handleEvents(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-func (h *Handler) handleQueryPreflight(ctx *fasthttp.RequestCtx) {
-	// Reject read routes when query support is not assembled. This keeps the
-	// runtime shape explicit instead of surfacing a half-configured internal API.
-	if h.opts.QueryReader == nil {
-		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
-		return
-	}
-
-	// Query preflight mirrors collect preflight but uses GET instead of POST.
-	// Production dashboards still keep readback server-side in simpletrack-saas
-	// so the internal query token is never exposed to browsers.
-	h.writeQueryCORS(ctx)
-	ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	ctx.Response.Header.Set("Access-Control-Allow-Headers", queryAllowHeaders)
-	ctx.Response.Header.Set("Access-Control-Max-Age", "600")
-	ctx.SetStatusCode(fasthttp.StatusNoContent)
-}
-
-func (h *Handler) requireQueryToken(ctx *fasthttp.RequestCtx) (queryTokenAuthDecision, bool) {
+func (h *Handler) requireQueryToken(ctx fiber.Ctx) (queryTokenAuthDecision, bool) {
 	// A missing accepted-token list means the internal read API was not safely
 	// configured, so hide the route shape instead of returning auth details.
 	if len(h.opts.QueryCredentials) == 0 {
-		h.writeJSON(ctx, fasthttp.StatusNotFound, ErrorResponse{Error: "not found"})
+		_ = h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 		return queryTokenAuthDecision{State: queryTokenAuthUnknown}, false
 	}
 	// Accept any configured rotation token while keeping source resolution and
 	// query execution behind successful internal authentication.
-	decision := authorizeQueryToken(bearerToken(string(ctx.Request.Header.Peek("Authorization"))), h.opts.QueryCredentials, h.opts.Now())
+	decision := authorizeQueryToken(bearerToken(ctx.Get("Authorization")), h.opts.QueryCredentials, h.opts.Now())
 	if decision.State == queryTokenAuthUnknown || decision.State == queryTokenAuthExpired || decision.State == queryTokenAuthNotYetValid {
 		h.auditRejectedQueryToken(ctx, decision)
-		h.writeJSON(ctx, fasthttp.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
+		_ = h.writeJSON(ctx, fiber.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
 		return queryTokenAuthDecision{}, false
 	}
 	return decision, true
 }
 
-func (h *Handler) resolveQuerySource(ctx *fasthttp.RequestCtx, decision queryTokenAuthDecision) (controlplane.SourceConfig, bool) {
+func (h *Handler) resolveQuerySource(ctx fiber.Ctx, decision queryTokenAuthDecision) (controlplane.SourceConfig, bool) {
 	// Query routes stay on the same write-key boundary as collect, but they also
 	// have to emit CORS headers for browser or SaaS-page callers before token
 	// validation runs.
 	writeKey := h.queryWriteKey(ctx)
 	if writeKey == "" {
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: "write_key is required"})
+		_ = h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: "write_key is required"})
 		return controlplane.SourceConfig{}, false
 	}
-	source, err := h.opts.Resolver.ResolveSource(ctx, writeKey)
+	source, err := h.opts.Resolver.ResolveSource(ctx.Context(), writeKey)
 	if err != nil {
-		h.writeResolveError(ctx, err)
+		_ = h.writeResolveError(ctx, err)
 		return controlplane.SourceConfig{}, false
 	}
 	origin := requestOrigin(ctx)
 	if !source.AllowsOrigin(origin) {
-		h.writeJSON(ctx, fasthttp.StatusForbidden, ErrorResponse{Error: "origin is not allowed"})
+		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "origin is not allowed"})
 		return controlplane.SourceConfig{}, false
 	}
 	h.auditAcceptedQueryToken(ctx, decision, source)
 	return source, true
 }
 
-func (h *Handler) auditAcceptedQueryToken(ctx *fasthttp.RequestCtx, decision queryTokenAuthDecision, source controlplane.SourceConfig) {
+func (h *Handler) auditAcceptedQueryToken(ctx fiber.Ctx, decision queryTokenAuthDecision, source controlplane.SourceConfig) {
 	if decision.State != queryTokenAuthAllowedGrace {
 		return
 	}
@@ -276,72 +242,65 @@ func (h *Handler) auditAcceptedQueryToken(ctx *fasthttp.RequestCtx, decision que
 		source.TenantID,
 		source.ProjectID,
 		source.SourceID,
-		string(ctx.Path()),
+		ctx.Path(),
 		h.clientIP(ctx),
 	)
 }
 
-func (h *Handler) auditRejectedQueryToken(ctx *fasthttp.RequestCtx, decision queryTokenAuthDecision) {
+func (h *Handler) auditRejectedQueryToken(ctx fiber.Ctx, decision queryTokenAuthDecision) {
 	switch decision.State {
 	case queryTokenAuthExpired:
-		log.Printf("rejected expired query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, string(ctx.Path()), h.clientIP(ctx))
+		log.Printf("rejected expired query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, ctx.Path(), h.clientIP(ctx))
 	case queryTokenAuthNotYetValid:
-		log.Printf("rejected not-yet-valid query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, string(ctx.Path()), h.clientIP(ctx))
+		log.Printf("rejected not-yet-valid query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, ctx.Path(), h.clientIP(ctx))
 	default:
-		log.Printf("rejected unknown query token route=%s remote_ip=%s", string(ctx.Path()), h.clientIP(ctx))
+		log.Printf("rejected unknown query token route=%s remote_ip=%s", ctx.Path(), h.clientIP(ctx))
 	}
 }
 
-func (h *Handler) writeQueryCORS(ctx *fasthttp.RequestCtx) {
-	// Query routes are internal but may be called by the SaaS browser app. The
-	// actual source allowlist check still runs after write-key resolution, while
-	// early auth/validation failures remain readable by browser callers.
-	h.writeCORS(ctx, requestOrigin(ctx))
-}
-
-func (h *Handler) queryWriteKey(ctx *fasthttp.RequestCtx) string {
-	if value := strings.TrimSpace(string(ctx.Request.Header.Peek("X-SimpleTrack-Write-Key"))); value != "" {
+func (h *Handler) queryWriteKey(ctx fiber.Ctx) string {
+	if value := strings.TrimSpace(ctx.Get("X-SimpleTrack-Write-Key")); value != "" {
 		return value
 	}
-	return strings.TrimSpace(string(ctx.QueryArgs().Peek("write_key")))
+	return strings.TrimSpace(ctx.Query("write_key"))
 }
 
-func (h *Handler) writeQueryError(ctx *fasthttp.RequestCtx, err error) {
+func (h *Handler) writeQueryError(ctx fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, storage.ErrInvalidEventQuery):
-		h.writeJSON(ctx, fasthttp.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
 	default:
 		log.Printf("query failed: %v", err)
-		h.writeJSON(ctx, fasthttp.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
+		return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
 	}
 }
 
-func parseRequiredQueryTime(ctx *fasthttp.RequestCtx, key string) (time.Time, error) {
-	value := strings.TrimSpace(string(ctx.QueryArgs().Peek(key)))
+func parseRequiredQueryTime(ctx fiber.Ctx, key string) (time.Time, error) {
+	value := strings.TrimSpace(ctx.Query(key))
 	if value == "" {
 		return time.Time{}, errors.New(key + " is required")
 	}
 	return parseTimeValue(value)
 }
 
-func parseQueryTimeOrDefault(ctx *fasthttp.RequestCtx, key string, fallback time.Time) (time.Time, error) {
-	value := strings.TrimSpace(string(ctx.QueryArgs().Peek(key)))
+func parseQueryTimeOrDefault(ctx fiber.Ctx, key string, fallback time.Time) (time.Time, error) {
+	value := strings.TrimSpace(ctx.Query(key))
 	if value == "" {
 		return fallback.UTC(), nil
 	}
 	return parseTimeValue(value)
 }
 
-func parseQueryLimitOrDefault(ctx *fasthttp.RequestCtx, key string, fallback int) (int, error) {
+func parseQueryLimitOrDefault(ctx fiber.Ctx, key string, fallback int) (int, error) {
 	return normalizeQueryIntOrDefault(ctx, key, fallback, 1)
 }
 
-func parseQueryIntOrDefault(ctx *fasthttp.RequestCtx, key string, fallback int) (int, error) {
+func parseQueryIntOrDefault(ctx fiber.Ctx, key string, fallback int) (int, error) {
 	return normalizeQueryIntOrDefault(ctx, key, fallback, 0)
 }
 
-func normalizeQueryIntOrDefault(ctx *fasthttp.RequestCtx, key string, fallback int, min int) (int, error) {
-	value := strings.TrimSpace(string(ctx.QueryArgs().Peek(key)))
+func normalizeQueryIntOrDefault(ctx fiber.Ctx, key string, fallback int, min int) (int, error) {
+	value := strings.TrimSpace(ctx.Query(key))
 	if value == "" {
 		return fallback, nil
 	}
@@ -367,7 +326,7 @@ func parseTimeValue(value string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
-func parsePropertyFilters(ctx *fasthttp.RequestCtx, source controlplane.SourceConfig) ([]storage.EventPropertyFilter, error) {
+func parsePropertyFilters(ctx fiber.Ctx, source controlplane.SourceConfig) ([]storage.EventPropertyFilter, error) {
 	// Property filters are repeatable JSON query parameters. Keep the shape
 	// explicit so future UI filters do not invent ad hoc dynamic SQL fragments.
 	rawFilters := propertyFilterArgs(ctx)
@@ -390,9 +349,9 @@ func parsePropertyFilters(ctx *fasthttp.RequestCtx, source controlplane.SourceCo
 	return filters, nil
 }
 
-func propertyFilterArgs(ctx *fasthttp.RequestCtx) [][]byte {
+func propertyFilterArgs(ctx fiber.Ctx) [][]byte {
 	filters := make([][]byte, 0, 2)
-	ctx.QueryArgs().VisitAll(func(key []byte, value []byte) {
+	ctx.Request().URI().QueryArgs().VisitAll(func(key []byte, value []byte) {
 		if string(key) != "property_filter" {
 			return
 		}

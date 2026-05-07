@@ -7,33 +7,35 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
 	"github.com/simpletrack/analytics-core/contracts"
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
-	"github.com/valyala/fasthttp"
 )
 
 func TestCollectAcceptsValidWriteKeyAndOverridesClientScope(t *testing.T) {
 	handler, bus := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin":     "https://docs.example.com",
 		"User-Agent": "Mozilla/5.0",
 		"Referer":    "https://docs.example.com/quickstart",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusAccepted {
+	if ctx.Response.StatusCode() != fiber.StatusAccepted {
 		t.Fatalf("expected accepted response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if len(bus.published) != 1 {
@@ -60,11 +62,11 @@ func TestCollectAcceptsValidWriteKeyAndOverridesClientScope(t *testing.T) {
 func TestCollectRejectsInvalidWriteKey(t *testing.T) {
 	handler, bus := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("missing"), map[string]string{
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("missing"), map[string]string{
 		"Origin": "https://docs.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+	if ctx.Response.StatusCode() != fiber.StatusUnauthorized {
 		t.Fatalf("expected unauthorized response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if len(bus.published) != 0 {
@@ -98,20 +100,20 @@ func TestCollectRejectsSourceDisabledAfterHTTPRevalidation(t *testing.T) {
 	bus := &recordingBus{}
 	handler := newTestHandlerWithResolver(t, newTestControlPlaneHTTPResolver(t, server.URL), false, bus)
 
-	first := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	first := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin": "https://docs.example.com",
 	})
-	if first.Response.StatusCode() != fasthttp.StatusAccepted {
+	if first.Response.StatusCode() != fiber.StatusAccepted {
 		t.Fatalf("expected initial collect acceptance, got %d: %s", first.Response.StatusCode(), first.Response.Body())
 	}
 	if len(bus.published) != 1 {
 		t.Fatalf("expected one accepted event before disable, got %d", len(bus.published))
 	}
 
-	second := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	second := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin": "https://docs.example.com",
 	})
-	if second.Response.StatusCode() != fasthttp.StatusForbidden {
+	if second.Response.StatusCode() != fiber.StatusForbidden {
 		t.Fatalf("expected disabled source rejection, got %d: %s", second.Response.StatusCode(), second.Response.Body())
 	}
 	if string(second.Response.Body()) != `{"error":"source is disabled"}` {
@@ -125,11 +127,11 @@ func TestCollectRejectsSourceDisabledAfterHTTPRevalidation(t *testing.T) {
 func TestCollectHidesInternalPublishErrors(t *testing.T) {
 	handler := newTestHandlerWithBus(t, testSourceConfig(), false, &recordingBus{err: errors.New("redis password leaked")})
 
-	ctx := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin": "https://docs.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+	if ctx.Response.StatusCode() != fiber.StatusInternalServerError {
 		t.Fatalf("expected internal server error, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if strings.Contains(string(ctx.Response.Body()), "redis password leaked") {
@@ -140,11 +142,11 @@ func TestCollectHidesInternalPublishErrors(t *testing.T) {
 func TestCollectRejectsBlockedOrigin(t *testing.T) {
 	handler, bus := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin": "https://blocked.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+	if ctx.Response.StatusCode() != fiber.StatusForbidden {
 		t.Fatalf("expected forbidden response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if len(bus.published) != 0 {
@@ -155,11 +157,11 @@ func TestCollectRejectsBlockedOrigin(t *testing.T) {
 func TestCollectPreflightReturnsCORSHeaders(t *testing.T) {
 	handler, _ := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodOptions, "/collect", "", map[string]string{
+	ctx := serve(handler, fiber.MethodOptions, "/collect", "", map[string]string{
 		"Origin": "https://docs.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusNoContent {
+	if ctx.Response.StatusCode() != fiber.StatusNoContent {
 		t.Fatalf("expected no-content preflight, got %d", ctx.Response.StatusCode())
 	}
 	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
@@ -173,7 +175,7 @@ func TestCollectPreflightReturnsCORSHeaders(t *testing.T) {
 func TestCollectFiltersBotTraffic(t *testing.T) {
 	handler, bus := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin":     "https://docs.example.com",
 		"User-Agent": "Googlebot/2.1",
 	})
@@ -186,7 +188,7 @@ func TestCollectFiltersInternalTraffic(t *testing.T) {
 	source.InternalCIDRs = []string{"203.0.113.0/24"}
 	handler, bus := newTestHandler(t, source, true)
 
-	ctx := serve(handler, fasthttp.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
 		"Origin":          "https://docs.example.com",
 		"X-Forwarded-For": "203.0.113.10",
 	})
@@ -197,9 +199,9 @@ func TestCollectFiltersInternalTraffic(t *testing.T) {
 func TestTrackerRouteReturnsJavaScript(t *testing.T) {
 	handler, _ := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodGet, "/tracker.js", "", nil)
+	ctx := serve(handler, fiber.MethodGet, "/tracker.js", "", nil)
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected tracker response, got %d", ctx.Response.StatusCode())
 	}
 	if !strings.Contains(string(ctx.Response.Body()), "window.simpletrack") {
@@ -210,9 +212,9 @@ func TestTrackerRouteReturnsJavaScript(t *testing.T) {
 func TestHealthRouteReturnsOK(t *testing.T) {
 	handler, _ := newTestHandler(t, testSourceConfig(), false)
 
-	ctx := serve(handler, fasthttp.MethodGet, "/healthz", "", nil)
+	ctx := serve(handler, fiber.MethodGet, "/healthz", "", nil)
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected health response, got %d", ctx.Response.StatusCode())
 	}
 }
@@ -241,11 +243,11 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	}
 	handler := newTestQueryHandler(t, testSourceConfig(), reader)
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected realtime response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if reader.realtimeQuery.TenantID != "tenant_control" || reader.realtimeQuery.ProjectID != "project_control" || reader.realtimeQuery.SourceID != "source_control" {
@@ -316,20 +318,20 @@ func TestRealtimeQueryRejectsDeletedSourceAfterHTTPRevalidation(t *testing.T) {
 		[]QueryCredential{{Token: "query-token"}},
 	)
 
-	first := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	first := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
-	if first.Response.StatusCode() != fasthttp.StatusOK {
+	if first.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected initial realtime response, got %d: %s", first.Response.StatusCode(), first.Response.Body())
 	}
 	if reader.realtimeCalls != 1 {
 		t.Fatalf("expected one realtime read before delete, got %d", reader.realtimeCalls)
 	}
 
-	second := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	second := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
-	if second.Response.StatusCode() != fasthttp.StatusUnauthorized {
+	if second.Response.StatusCode() != fiber.StatusUnauthorized {
 		t.Fatalf("expected deleted source rejection, got %d: %s", second.Response.StatusCode(), second.Response.Body())
 	}
 	if string(second.Response.Body()) != `{"error":"invalid write key"}` {
@@ -365,11 +367,11 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	handler := newTestQueryHandler(t, testSourceConfig(), reader)
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&limit=25&offset=3&event_name=signup_clicked&distinct_id=visitor_1&sort_field=received_at&sort_direction=asc", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&limit=25&offset=3&event_name=signup_clicked&distinct_id=visitor_1&sort_field=received_at&sort_direction=asc", "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if reader.eventsQuery.EventName != "signup_clicked" || reader.eventsQuery.DistinctID != "visitor_1" {
@@ -410,11 +412,11 @@ func TestEventsQueryMapsAllowlistedPropertyFilters(t *testing.T) {
 	handler := newTestQueryHandler(t, source, reader)
 	propertyFilter := url.QueryEscape(`{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}`)
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+propertyFilter, "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+propertyFilter, "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if len(reader.eventsQuery.PropertyFilters) != 1 {
@@ -442,11 +444,11 @@ func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
 	handler := newTestQueryHandlerWithResolver(t, resolver, reader)
 	propertyFilter := url.QueryEscape(`{"scope":"event","name":"plan","type":"string","op":"eq","value":"pro"}`)
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+propertyFilter, "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&property_filter="+propertyFilter, "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+	if ctx.Response.StatusCode() != fiber.StatusBadRequest {
 		t.Fatalf("expected bad request for unallowlisted property filter, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if resolver.calls != 1 {
@@ -461,11 +463,11 @@ func TestQueryRoutesRequireBearerToken(t *testing.T) {
 	resolver := &countingResolver{source: testSourceConfig()}
 	handler := newTestQueryHandlerWithResolver(t, resolver, &recordingQueryReader{})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
 		"Origin": "https://docs.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+	if ctx.Response.StatusCode() != fiber.StatusUnauthorized {
 		t.Fatalf("expected unauthorized response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
@@ -480,11 +482,11 @@ func TestQueryRoutesAcceptRotatedBearerToken(t *testing.T) {
 	reader := &recordingQueryReader{}
 	handler := newTestQueryHandlerWithTokens(t, testSourceConfig(), reader, []string{"current-token", "previous-token"})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer previous-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected rotated query token to be accepted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if reader.realtimeQuery.SourceID != "source_control" {
@@ -497,11 +499,11 @@ func TestQueryRoutesRejectUnknownBearerDuringRotation(t *testing.T) {
 	reader := &recordingQueryReader{}
 	handler := newTestQueryHandlerWithResolverAndTokens(t, resolver, reader, []string{"current-token", "previous-token"})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer wrong-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+	if ctx.Response.StatusCode() != fiber.StatusUnauthorized {
 		t.Fatalf("expected unauthorized response for unknown rotated token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if resolver.calls != 0 {
@@ -527,11 +529,11 @@ func TestQueryRoutesAcceptStructuredRotatedBearerToken(t *testing.T) {
 		},
 	})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer previous-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+	if ctx.Response.StatusCode() != fiber.StatusOK {
 		t.Fatalf("expected structured rotated token to be accepted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if reader.realtimeQuery.SourceID != "source_control" {
@@ -552,11 +554,11 @@ func TestQueryRoutesRejectExpiredBearerToken(t *testing.T) {
 		},
 	})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer expired-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+	if ctx.Response.StatusCode() != fiber.StatusUnauthorized {
 		t.Fatalf("expected unauthorized response for expired token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if resolver.calls != 0 {
@@ -580,11 +582,11 @@ func TestQueryRoutesRejectNotYetValidBearerToken(t *testing.T) {
 		},
 	})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
 		"Authorization": "Bearer future-token",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+	if ctx.Response.StatusCode() != fiber.StatusUnauthorized {
 		t.Fatalf("expected unauthorized response for not-yet-valid token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if resolver.calls != 0 {
@@ -599,12 +601,12 @@ func TestQueryRoutesRejectNotYetValidBearerToken(t *testing.T) {
 func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
 	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
 
-	ctx := serve(handler, fasthttp.MethodGet, "/v1/events?from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
 		"Authorization": "Bearer query-token",
 		"Origin":        "https://docs.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+	if ctx.Response.StatusCode() != fiber.StatusBadRequest {
 		t.Fatalf("expected bad-request response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
@@ -615,17 +617,17 @@ func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
 func TestQueryPreflightReturnsCORSHeaders(t *testing.T) {
 	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
 
-	ctx := serve(handler, fasthttp.MethodOptions, "/v1/events?write_key=wk_live", "", map[string]string{
+	ctx := serve(handler, fiber.MethodOptions, "/v1/events?write_key=wk_live", "", map[string]string{
 		"Origin": "https://docs.example.com",
 	})
 
-	if ctx.Response.StatusCode() != fasthttp.StatusNoContent {
+	if ctx.Response.StatusCode() != fiber.StatusNoContent {
 		t.Fatalf("expected no-content query preflight, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != "https://docs.example.com" {
 		t.Fatalf("expected reflected query CORS origin, got %q", ctx.Response.Header.Peek("Access-Control-Allow-Origin"))
 	}
-	if got := string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")); got != "GET, OPTIONS" {
+	if got := string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")); got != "GET, POST, OPTIONS" {
 		t.Fatalf("expected query methods, got %q", got)
 	}
 	allowHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
@@ -636,15 +638,113 @@ func TestQueryPreflightReturnsCORSHeaders(t *testing.T) {
 	}
 }
 
-func newTestHandler(t *testing.T, source controlplane.SourceConfig, trustForwarded bool) (fasthttp.RequestHandler, *recordingBus) {
+func TestQueryRoutesUseConfiguredPaths(t *testing.T) {
+	reader := &recordingQueryReader{}
+	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{testSourceConfig()})
+	if err != nil {
+		t.Fatalf("new memory resolver failed: %v", err)
+	}
+	app, err := NewApp(Options{
+		CollectPath:   "/collect",
+		HealthPath:    "/healthz",
+		TrackerPath:   "/tracker.js",
+		EventsPath:    "/internal/events",
+		RealtimePath:  "/internal/realtime",
+		TrackerScript: []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:       resolver,
+		Bus:            &recordingBus{},
+		QueryReader:    reader,
+		QueryToken:     "query-token",
+		QueryTokens:    nil,
+		OpenAPIFile:    "",
+		SwaggerEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("new app failed: %v", err)
+	}
+
+	custom := serve(app, fiber.MethodGet, "/internal/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+	if custom.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected configured realtime route, got %d: %s", custom.Response.StatusCode(), custom.Response.Body())
+	}
+	defaultRoute := serve(app, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+	if defaultRoute.Response.StatusCode() != fiber.StatusNotFound {
+		t.Fatalf("expected default realtime route to be unregistered, got %d: %s", defaultRoute.Response.StatusCode(), defaultRoute.Response.Body())
+	}
+}
+
+func TestSwaggerDisabledByDefault(t *testing.T) {
+	app, _ := newTestHandler(t, testSourceConfig(), false)
+
+	response := serve(app, fiber.MethodGet, "/swagger/docs", "", nil)
+
+	if response.Response.StatusCode() != fiber.StatusNotFound {
+		t.Fatalf("expected swagger to be disabled, got %d: %s", response.Response.StatusCode(), response.Response.Body())
+	}
+}
+
+func TestSwaggerRoutesServeOpenAPIWhenEnabled(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+	openAPI := filepath.Join(tempDir, "openapi.yaml")
+	if err := os.WriteFile(openAPI, []byte("openapi: 3.0.3\ninfo:\n  title: Test API\n  version: 0.0.1\npaths: {}\n"), 0600); err != nil {
+		t.Fatalf("write openapi file failed: %v", err)
+	}
+	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{testSourceConfig()})
+	if err != nil {
+		t.Fatalf("new memory resolver failed: %v", err)
+	}
+	app, err := NewApp(Options{
+		CollectPath:   "/collect",
+		HealthPath:    "/healthz",
+		TrackerPath:   "/tracker.js",
+		TrackerScript: []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:       resolver,
+		Bus:            &recordingBus{},
+		SwaggerEnabled: true,
+		SwaggerPath:    "/swagger",
+		OpenAPIFile:    "openapi.yaml",
+		QueryReader:    nil,
+	})
+	if err != nil {
+		t.Fatalf("new app failed: %v", err)
+	}
+
+	spec := serve(app, fiber.MethodGet, "/swagger/openapi.yaml", "", nil)
+	if spec.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected openapi spec response, got %d: %s", spec.Response.StatusCode(), spec.Response.Body())
+	}
+	if !strings.Contains(string(spec.Response.Body()), "Test API") {
+		t.Fatalf("expected openapi body, got %s", spec.Response.Body())
+	}
+	ui := serve(app, fiber.MethodGet, "/swagger/docs", "", nil)
+	if ui.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected swagger ui response, got %d: %s", ui.Response.StatusCode(), ui.Response.Body())
+	}
+	if !strings.Contains(string(ui.Response.Body()), "SimpleTrack Analytics Service API") {
+		t.Fatalf("expected swagger ui body, got %s", ui.Response.Body())
+	}
+}
+
+func newTestHandler(t *testing.T, source controlplane.SourceConfig, trustForwarded bool) (*fiber.App, *recordingBus) {
 	t.Helper()
 
 	bus := &recordingBus{}
-	handler := newTestHandlerWithBus(t, source, trustForwarded, bus)
-	return handler, bus
+	app := newTestHandlerWithBus(t, source, trustForwarded, bus)
+	return app, bus
 }
 
-func newTestHandlerWithBus(t *testing.T, source controlplane.SourceConfig, trustForwarded bool, bus *recordingBus) fasthttp.RequestHandler {
+func newTestHandlerWithBus(t *testing.T, source controlplane.SourceConfig, trustForwarded bool, bus *recordingBus) *fiber.App {
 	t.Helper()
 
 	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
@@ -654,10 +754,10 @@ func newTestHandlerWithBus(t *testing.T, source controlplane.SourceConfig, trust
 	return newTestHandlerWithResolver(t, resolver, trustForwarded, bus)
 }
 
-func newTestHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, trustForwarded bool, bus *recordingBus) fasthttp.RequestHandler {
+func newTestHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, trustForwarded bool, bus *recordingBus) *fiber.App {
 	t.Helper()
 
-	handler, err := NewHandler(Options{
+	app, err := NewApp(Options{
 		CollectPath:           "/collect",
 		HealthPath:            "/healthz",
 		TrackerPath:           "/tracker.js",
@@ -670,9 +770,9 @@ func newTestHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, tr
 		Bus:      bus,
 	})
 	if err != nil {
-		t.Fatalf("new handler failed: %v", err)
+		t.Fatalf("new app failed: %v", err)
 	}
-	return handler.ServeFastHTTP
+	return app
 }
 
 func newTestControlPlaneHTTPResolver(t *testing.T, endpoint string) controlplane.Resolver {
@@ -690,7 +790,7 @@ func newTestControlPlaneHTTPResolver(t *testing.T, endpoint string) controlplane
 	return resolver
 }
 
-func newTestQueryHandler(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader) fasthttp.RequestHandler {
+func newTestQueryHandler(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader) *fiber.App {
 	t.Helper()
 
 	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
@@ -700,13 +800,13 @@ func newTestQueryHandler(t *testing.T, source controlplane.SourceConfig, reader 
 	return newTestQueryHandlerWithResolver(t, resolver, reader)
 }
 
-func newTestQueryHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader) fasthttp.RequestHandler {
+func newTestQueryHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader) *fiber.App {
 	t.Helper()
 
 	return newTestQueryHandlerWithResolverAndTokens(t, resolver, reader, []string{"query-token"})
 }
 
-func newTestQueryHandlerWithTokens(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader, tokens []string) fasthttp.RequestHandler {
+func newTestQueryHandlerWithTokens(t *testing.T, source controlplane.SourceConfig, reader storage.EventReader, tokens []string) *fiber.App {
 	t.Helper()
 
 	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
@@ -716,7 +816,7 @@ func newTestQueryHandlerWithTokens(t *testing.T, source controlplane.SourceConfi
 	return newTestQueryHandlerWithResolverAndTokens(t, resolver, reader, tokens)
 }
 
-func newTestQueryHandlerWithResolverAndTokens(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader, tokens []string) fasthttp.RequestHandler {
+func newTestQueryHandlerWithResolverAndTokens(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader, tokens []string) *fiber.App {
 	t.Helper()
 
 	queryToken := ""
@@ -728,7 +828,7 @@ func newTestQueryHandlerWithResolverAndTokens(t *testing.T, resolver controlplan
 		queryTokens = tokens[1:]
 	}
 
-	handler, err := NewHandler(Options{
+	app, err := NewApp(Options{
 		CollectPath:           "/collect",
 		HealthPath:            "/healthz",
 		TrackerPath:           "/tracker.js",
@@ -744,15 +844,15 @@ func newTestQueryHandlerWithResolverAndTokens(t *testing.T, resolver controlplan
 		QueryTokens: queryTokens,
 	})
 	if err != nil {
-		t.Fatalf("new handler failed: %v", err)
+		t.Fatalf("new app failed: %v", err)
 	}
-	return handler.ServeFastHTTP
+	return app
 }
 
-func newTestQueryHandlerWithResolverAndCredentials(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader, credentials []QueryCredential) fasthttp.RequestHandler {
+func newTestQueryHandlerWithResolverAndCredentials(t *testing.T, resolver controlplane.Resolver, reader storage.EventReader, credentials []QueryCredential) *fiber.App {
 	t.Helper()
 
-	handler, err := NewHandler(Options{
+	app, err := NewApp(Options{
 		CollectPath:           "/collect",
 		HealthPath:            "/healthz",
 		TrackerPath:           "/tracker.js",
@@ -767,27 +867,73 @@ func newTestQueryHandlerWithResolverAndCredentials(t *testing.T, resolver contro
 		QueryCredentials: credentials,
 	})
 	if err != nil {
-		t.Fatalf("new handler failed: %v", err)
+		t.Fatalf("new app failed: %v", err)
 	}
-	return handler.ServeFastHTTP
+	return app
 }
 
-func serve(handler fasthttp.RequestHandler, method string, path string, body string, headers map[string]string) *fasthttp.RequestCtx {
-	var request fasthttp.Request
-	request.Header.SetMethod(method)
-	request.SetRequestURI(path)
+func serve(app *fiber.App, method string, path string, body string, headers map[string]string) *testCtx {
+	request, err := http.NewRequest(method, path, strings.NewReader(body))
+	if err != nil {
+		panic(err)
+	}
+	request.RemoteAddr = "198.51.100.10:443"
 	if body != "" {
-		request.Header.SetContentType(contentTypeJSON)
-		request.SetBodyString(body)
+		request.Header.Set("Content-Type", contentTypeJSON)
 	}
 	for key, value := range headers {
 		request.Header.Set(key, value)
 	}
+	if method == fiber.MethodOptions && request.Header.Get("Access-Control-Request-Method") == "" {
+		if strings.HasPrefix(path, "/v1/") {
+			request.Header.Set("Access-Control-Request-Method", fiber.MethodGet)
+		} else {
+			request.Header.Set("Access-Control-Request-Method", fiber.MethodPost)
+		}
+	}
 
-	var ctx fasthttp.RequestCtx
-	ctx.Init(&request, &net.TCPAddr{IP: net.ParseIP("198.51.100.10"), Port: 443}, nil)
-	handler(&ctx)
-	return &ctx
+	response, err := app.Test(request)
+	if err != nil {
+		panic(err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		panic(err)
+	}
+	return &testCtx{
+		Response: testResponse{
+			statusCode: response.StatusCode,
+			body:       payload,
+			Header:     testHeader{values: response.Header},
+		},
+	}
+}
+
+type testCtx struct {
+	Response testResponse
+}
+
+type testResponse struct {
+	statusCode int
+	body       []byte
+	Header     testHeader
+}
+
+func (r testResponse) StatusCode() int {
+	return r.statusCode
+}
+
+func (r testResponse) Body() []byte {
+	return r.body
+}
+
+type testHeader struct {
+	values http.Header
+}
+
+func (h testHeader) Peek(key string) []byte {
+	return []byte(h.values.Get(key))
 }
 
 func captureLogs(t *testing.T) *bytes.Buffer {
@@ -851,10 +997,10 @@ func testSourceConfig() controlplane.SourceConfig {
 	}
 }
 
-func assertFiltered(t *testing.T, ctx *fasthttp.RequestCtx, bus *recordingBus) {
+func assertFiltered(t *testing.T, ctx *testCtx, bus *recordingBus) {
 	t.Helper()
 
-	if ctx.Response.StatusCode() != fasthttp.StatusAccepted {
+	if ctx.Response.StatusCode() != fiber.StatusAccepted {
 		t.Fatalf("expected accepted filtered response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	var response AcceptedResponse
