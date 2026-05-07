@@ -48,6 +48,8 @@ $env:ANALYTICS_SERVICE_SOURCES_JSON='[
       {"scope":"user","name":"plan","value_types":["string"]}
     ],
     "session_salt":"local-session-salt",
+    "visit_salt":"local-visit-salt",
+    "visit_window_seconds":1800,
     "client_hash_salt":"local-client-salt",
     "include_client_fingerprint":true
   }
@@ -55,9 +57,9 @@ $env:ANALYTICS_SERVICE_SOURCES_JSON='[
 go run ./cmd/simpletrack-anaysitics-service
 ```
 
-`session_salt` and `client_hash_salt` are server-only runtime secrets. They must
-come from the control plane or local runtime config and must not be derived from
-the public write key shown in a browser snippet.
+`session_salt`, `visit_salt`, and `client_hash_salt` are server-only runtime
+secrets. They must come from the control plane or local runtime config and must
+not be derived from the public write key shown in a browser snippet.
 
 For production-shaped runtime config reads, switch source resolution to the SaaS
 control-plane HTTP endpoint:
