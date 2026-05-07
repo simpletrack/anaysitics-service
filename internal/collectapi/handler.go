@@ -239,7 +239,7 @@ func (h *Handler) handleCollect(ctx fiber.Ctx) error {
 }
 
 func (h *Handler) stages(source controlplane.SourceConfig) ([]collect.Stage, error) {
-	stages := make([]collect.Stage, 0, 3)
+	stages := make([]collect.Stage, 0, 4)
 
 	// Runtime filters execute before queue publish so SaaS-managed internal
 	// traffic rules do not write noise into analytics-core storage.
@@ -276,6 +276,19 @@ func (h *Handler) stages(source controlplane.SourceConfig) ([]collect.Stage, err
 	})
 	if err == nil {
 		stages = append(stages, session)
+	} else {
+		return nil, err
+	}
+
+	// Visit derivation happens after session derivation because the canonical
+	// analytics visit key should include the final stored session id when one is
+	// present. The stage still preserves any SDK-provided visit_id.
+	visit, err := collect.NewVisitResolverStage(collect.VisitResolverConfig{
+		Salt:   source.VisitSalt,
+		Window: source.VisitWindow,
+	})
+	if err == nil {
+		stages = append(stages, visit)
 	} else {
 		return nil, err
 	}

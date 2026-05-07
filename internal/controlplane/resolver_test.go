@@ -11,6 +11,7 @@ func TestMemoryResolverRejectsDuplicateWriteKeys(t *testing.T) {
 			ProjectID:      "project_1",
 			SourceID:       "source_1",
 			SessionSalt:    "session-salt-1",
+			VisitSalt:      "visit-salt-1",
 			ClientHashSalt: "client-salt-1",
 		},
 		{
@@ -20,6 +21,7 @@ func TestMemoryResolverRejectsDuplicateWriteKeys(t *testing.T) {
 			ProjectID:      "project_2",
 			SourceID:       "source_2",
 			SessionSalt:    "session-salt-2",
+			VisitSalt:      "visit-salt-2",
 			ClientHashSalt: "client-salt-2",
 		},
 	})
@@ -77,6 +79,7 @@ func TestMemoryResolverRejectsInvalidPropertyFilterConfig(t *testing.T) {
 			ProjectID:      "project_1",
 			SourceID:       "source_1",
 			SessionSalt:    "session-salt",
+			VisitSalt:      "visit-salt",
 			ClientHashSalt: "client-salt",
 			AllowedPropertyFilters: []AllowedPropertyFilter{
 				{Scope: "account", Name: "plan", ValueTypes: []string{"string"}},

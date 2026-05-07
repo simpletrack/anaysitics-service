@@ -37,7 +37,7 @@ type queryEventResponse struct {
 	EventName      string          `json:"event_name"`
 	DistinctID     string          `json:"distinct_id"`
 	SessionID      string          `json:"session_id,omitempty"`
-	VisitID        string          `json:"visit_id,omitempty"` // VisitID is the optional visit key returned to readback callers
+	VisitID        string          `json:"visit_id,omitempty"` // VisitID is the canonical analytics visit key returned to readback callers
 	EventTime      string          `json:"event_time"`
 	ReceivedAt     string          `json:"received_at"`
 	Properties     json.RawMessage `json:"properties,omitempty"`
@@ -162,12 +162,14 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 
 	// Let analytics-core own the allowlisted sort and filter semantics. The
 	// service only maps the public query string into the core request contract.
+	eventFilters := eventColumnFilters(ctx)
 	records, err := h.opts.QueryReader.ListEvents(ctx.Context(), storage.EventListQuery{
 		TenantID:                 source.TenantID,
 		ProjectID:                source.ProjectID,
 		SourceID:                 source.SourceID,
 		EventName:                strings.TrimSpace(ctx.Query("event_name")),
 		DistinctID:               strings.TrimSpace(ctx.Query("distinct_id")),
+		Filters:                  eventFilters,
 		From:                     from,
 		To:                       to,
 		Limit:                    limit,
@@ -189,6 +191,22 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 		From:   from.UTC().Format(time.RFC3339Nano),
 		To:     to.UTC().Format(time.RFC3339Nano),
 	})
+}
+
+func eventColumnFilters(ctx fiber.Ctx) []storage.EventFilter {
+	filters := make([]storage.EventFilter, 0, 1)
+
+	// visit_id is a persisted analytics key now, so expose it through the same
+	// allowlisted filter path as future session/source fields instead of adding
+	// ad hoc SQL or a service-owned query branch.
+	if visitID := strings.TrimSpace(ctx.Query("visit_id")); visitID != "" {
+		filters = append(filters, storage.EventFilter{
+			Field:    storage.EventFilterByVisitID,
+			Operator: storage.EventFilterEquals,
+			Value:    visitID,
+		})
+	}
+	return filters
 }
 
 func (h *Handler) requireQueryToken(ctx fiber.Ctx) (queryTokenAuthDecision, bool) {

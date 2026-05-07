@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 )
+
+const defaultVisitWindow = 30 * time.Minute
 
 // ErrSourceNotFound reports an unknown write key.
 var ErrSourceNotFound = errors.New("analytics source not found")
@@ -32,6 +35,9 @@ type SourceConfig struct {
 	InternalCIDRs            []string                `json:"internal_cidrs"`             // InternalCIDRs are runtime network ranges filtered before publishing
 	InternalIPs              []string                `json:"internal_ips"`               // InternalIPs are exact runtime client addresses filtered before publishing
 	SessionSalt              string                  `json:"session_salt"`               // SessionSalt namespaces derived session ids
+	VisitSalt                string                  `json:"visit_salt"`                 // VisitSalt namespaces derived canonical analytics visit ids
+	VisitWindow              time.Duration           `json:"-"`                          // VisitWindow is the server-side visit bucket used by collect stages
+	VisitWindowSeconds       int                     `json:"visit_window_seconds"`       // VisitWindowSeconds encodes VisitWindow for JSON runtime configs
 	ClientHashSalt           string                  `json:"client_hash_salt"`           // ClientHashSalt namespaces derived client IP hashes
 	IncludeClientFingerprint bool                    `json:"include_client_fingerprint"` // IncludeClientFingerprint adds transient client data to derived sessions
 }
@@ -51,10 +57,13 @@ func (c SourceConfig) Normalize() SourceConfig {
 	c.SourceID = strings.TrimSpace(c.SourceID)
 	c.SourceType = strings.TrimSpace(c.SourceType)
 	c.SessionSalt = strings.TrimSpace(c.SessionSalt)
+	c.VisitSalt = strings.TrimSpace(c.VisitSalt)
 	c.ClientHashSalt = strings.TrimSpace(c.ClientHashSalt)
 	if c.SourceType == "" {
 		c.SourceType = "web"
 	}
+	c.VisitWindow = normalizeVisitWindow(c.VisitWindow, c.VisitWindowSeconds)
+	c.VisitWindowSeconds = int(c.VisitWindow / time.Second)
 	c.AllowedOrigins = normalizeStringList(c.AllowedOrigins)
 	c.AllowedPropertyFilters = normalizeAllowedPropertyFilters(c.AllowedPropertyFilters)
 	c.BotUserAgents = normalizeStringList(c.BotUserAgents)
@@ -265,6 +274,16 @@ func normalizeLowerStringList(values []string) []string {
 	return out
 }
 
+func normalizeVisitWindow(window time.Duration, encodedSeconds int) time.Duration {
+	if window <= 0 && encodedSeconds > 0 {
+		window = time.Duration(encodedSeconds) * time.Second
+	}
+	if window <= 0 {
+		return defaultVisitWindow
+	}
+	return window
+}
+
 func newSchemaSurfaceKey(source SourceConfig) schemaSurfaceKey {
 	return schemaSurfaceKey{
 		writeKey:   source.WriteKey,
@@ -292,6 +311,12 @@ func validateSourceConfig(source SourceConfig) error {
 	}
 	if source.SessionSalt == "" {
 		return errors.New("source session salt is required")
+	}
+	if source.VisitSalt == "" {
+		return errors.New("source visit salt is required")
+	}
+	if source.VisitWindow < time.Minute {
+		return errors.New("source visit window must be at least one minute")
 	}
 	if source.ClientHashSalt == "" {
 		return errors.New("source client hash salt is required")

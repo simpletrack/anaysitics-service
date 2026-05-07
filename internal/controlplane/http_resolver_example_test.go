@@ -20,6 +20,7 @@ func ExampleNewHTTPResolver() {
 			SourceID:       "source_web",
 			SourceType:     "web",
 			SessionSalt:    "session-salt",
+			VisitSalt:      "visit-salt",
 			ClientHashSalt: "client-salt",
 		})
 	}))

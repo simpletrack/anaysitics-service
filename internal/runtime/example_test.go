@@ -58,6 +58,7 @@ func exampleRuntimeConfig() config.Config {
 				ProjectID:      "project_1",
 				SourceID:       "source_web",
 				SessionSalt:    "server-only-session-salt",
+				VisitSalt:      "server-only-visit-salt",
 				ClientHashSalt: "server-only-client-salt",
 			},
 		},

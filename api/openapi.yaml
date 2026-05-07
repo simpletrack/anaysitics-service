@@ -178,6 +178,10 @@ paths:
           schema:
             type: string
         - in: query
+          name: visit_id
+          schema:
+            type: string
+        - in: query
           name: sort_field
           schema:
             type: string
@@ -276,6 +280,10 @@ components:
         event_name:
           type: string
         distinct_id:
+          type: string
+        session_id:
+          type: string
+        visit_id:
           type: string
         event_time:
           type: string

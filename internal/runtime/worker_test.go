@@ -131,7 +131,7 @@ func TestEnsureClickHouseTablesCreatesEventAndPropertyTablesWhenEnabled(t *testi
 	if len(conn.execs) != 2 {
 		t.Fatalf("expected 2 DDL statements, got %d: %#v", len(conn.execs), conn.execs)
 	}
-	if !strings.Contains(conn.execs[0], "ORDER BY (tenant_id, project_id, source_id, event_time, event_id)") {
+	if !strings.Contains(conn.execs[0], "ORDER BY (tenant_id, project_id, source_id, event_time, visit_id, event_id)") {
 		t.Fatalf("event DDL did not include expected ordering: %s", conn.execs[0])
 	}
 }
@@ -252,6 +252,7 @@ func testRuntimeSource() controlplane.SourceConfig {
 		ProjectID:      "project_control",
 		SourceID:       "source_control",
 		SessionSalt:    "server-only-session-salt",
+		VisitSalt:      "server-only-visit-salt",
 		ClientHashSalt: "server-only-client-salt",
 	}
 }

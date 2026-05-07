@@ -3,8 +3,6 @@ package collectapi
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +47,9 @@ func TestCollectAcceptsValidWriteKeyAndOverridesClientScope(t *testing.T) {
 	}
 	if published.SessionID == "" {
 		t.Fatalf("expected analytics-core session resolver to derive a session id")
+	}
+	if published.VisitID == "" {
+		t.Fatalf("expected analytics-core visit resolver to derive a visit id")
 	}
 	if published.Properties["client.referrer"] != "https://docs.example.com/quickstart" {
 		t.Fatalf("expected client enrichment property, got %#v", published.Properties)
@@ -139,6 +139,31 @@ func TestCollectHidesInternalPublishErrors(t *testing.T) {
 	}
 }
 
+func TestCollectPreservesExplicitVisitID(t *testing.T) {
+	handler, bus := newTestHandler(t, testSourceConfig(), false)
+	body := `{
+		"write_key":"wk_live",
+		"id":"evt_1",
+		"event_name":"pageview",
+		"distinct_id":"visitor_1",
+		"visit_id":"sdk_visit_1"
+	}`
+
+	ctx := serve(handler, fiber.MethodPost, "/collect", body, map[string]string{
+		"Origin": "https://docs.example.com",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusAccepted {
+		t.Fatalf("expected accepted response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(bus.published) != 1 {
+		t.Fatalf("expected one published event, got %d", len(bus.published))
+	}
+	if bus.published[0].VisitID != "sdk_visit_1" {
+		t.Fatalf("expected explicit visit id to be preserved, got %q", bus.published[0].VisitID)
+	}
+}
+
 func TestCollectRejectsBlockedOrigin(t *testing.T) {
 	handler, bus := newTestHandler(t, testSourceConfig(), false)
 
@@ -221,7 +246,6 @@ func TestHealthRouteReturnsOK(t *testing.T) {
 
 func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	eventTime := time.Date(2026, 5, 3, 9, 55, 0, 0, time.UTC)
-	visitID := derivedVisitID("session_1", eventTime)
 	reader := &recordingQueryReader{
 		realtime: []storage.EventRecord{
 			{
@@ -233,7 +257,7 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 				EventName:  "page_view",
 				DistinctID: "visitor_1",
 				SessionID:  "session_1",
-				VisitID:    visitID,
+				VisitID:    "visit_1",
 				EventTime:  eventTime,
 				ReceivedAt: time.Date(2026, 5, 3, 9, 55, 1, 0, time.UTC),
 				Properties: `{"path":"/"}`,
@@ -271,8 +295,8 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	if got := string(response.Items[0].Properties); got != `{"path":"/"}` {
 		t.Fatalf("expected realtime properties JSON, got %s", got)
 	}
-	if got := response.Items[0].VisitID; got != visitID {
-		t.Fatalf("expected realtime visit id %q, got %q", visitID, got)
+	if got := response.Items[0].VisitID; got != "visit_1" {
+		t.Fatalf("expected realtime visit id %q, got %q", "visit_1", got)
 	}
 }
 
@@ -344,7 +368,6 @@ func TestRealtimeQueryRejectsDeletedSourceAfterHTTPRevalidation(t *testing.T) {
 
 func TestEventsQueryReturnsRecords(t *testing.T) {
 	eventTime := time.Date(2026, 5, 3, 9, 20, 0, 0, time.UTC)
-	visitID := derivedVisitID("session_1", eventTime)
 	reader := &recordingQueryReader{
 		events: []storage.EventRecord{
 			{
@@ -356,7 +379,7 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 				EventName:      "signup_clicked",
 				DistinctID:     "visitor_1",
 				SessionID:      "session_1",
-				VisitID:        visitID,
+				VisitID:        "visit_2",
 				EventTime:      eventTime,
 				ReceivedAt:     time.Date(2026, 5, 3, 9, 20, 1, 0, time.UTC),
 				Properties:     `{"button":"hero"}`,
@@ -367,7 +390,7 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	handler := newTestQueryHandler(t, testSourceConfig(), reader)
 
-	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&limit=25&offset=3&event_name=signup_clicked&distinct_id=visitor_1&sort_field=received_at&sort_direction=asc", "", map[string]string{
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z&limit=25&offset=3&event_name=signup_clicked&distinct_id=visitor_1&visit_id=visit_2&sort_field=received_at&sort_direction=asc", "", map[string]string{
 		"Authorization": "Bearer query-token",
 	})
 
@@ -376,6 +399,11 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	if reader.eventsQuery.EventName != "signup_clicked" || reader.eventsQuery.DistinctID != "visitor_1" {
 		t.Fatalf("expected request filters to reach analytics-core, got %#v", reader.eventsQuery)
+	}
+	if len(reader.eventsQuery.Filters) != 1 ||
+		reader.eventsQuery.Filters[0].Field != storage.EventFilterByVisitID ||
+		reader.eventsQuery.Filters[0].Value != "visit_2" {
+		t.Fatalf("expected visit id filter to reach analytics-core, got %#v", reader.eventsQuery.Filters)
 	}
 	if reader.eventsQuery.Limit != 25 || reader.eventsQuery.Offset != 3 {
 		t.Fatalf("expected paging values to reach analytics-core, got limit=%d offset=%d", reader.eventsQuery.Limit, reader.eventsQuery.Offset)
@@ -397,8 +425,8 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	if got := string(response.Items[0].UserProperties); got != `{"plan":"free"}` {
 		t.Fatalf("expected user properties JSON, got %s", got)
 	}
-	if got := response.Items[0].VisitID; got != visitID {
-		t.Fatalf("expected events visit id %q, got %q", visitID, got)
+	if got := response.Items[0].VisitID; got != "visit_2" {
+		t.Fatalf("expected events visit id %q, got %q", "visit_2", got)
 	}
 }
 
@@ -992,6 +1020,7 @@ func testSourceConfig() controlplane.SourceConfig {
 		SourceType:               "web",
 		AllowedOrigins:           []string{"https://docs.example.com"},
 		SessionSalt:              "session-salt",
+		VisitSalt:                "visit-salt",
 		ClientHashSalt:           "client-salt",
 		IncludeClientFingerprint: true,
 	}
@@ -1013,15 +1042,6 @@ func assertFiltered(t *testing.T, ctx *testCtx, bus *recordingBus) {
 	if len(bus.published) != 0 {
 		t.Fatalf("filtered traffic should not publish events")
 	}
-}
-
-func derivedVisitID(sessionID string, eventTime time.Time) string {
-	if sessionID == "" || eventTime.IsZero() {
-		return ""
-	}
-	bucket := eventTime.UTC().Truncate(30 * time.Minute).Unix()
-	sum := sha256.Sum256([]byte(sessionID + ":" + strconv.FormatInt(bucket, 10)))
-	return "vis_" + hex.EncodeToString(sum[:16])
 }
 
 type recordingBus struct {
