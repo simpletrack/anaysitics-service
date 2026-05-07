@@ -276,6 +276,39 @@ func TestCollectFilteredAuditLogOmitsRawIP(t *testing.T) {
 	}
 }
 
+func TestCollectInternalTrafficAuditLogOmitsRawIP(t *testing.T) {
+	logs := captureLogs(t)
+	source := testSourceConfig()
+	source.InternalIPs = []string{"203.0.113.10"}
+	handler, bus := newTestHandler(t, source, true)
+
+	// Exercise the trusted proxy path because internal traffic filters often
+	// depend on load balancer headers in local and production deployments.
+	ctx := serve(handler, fiber.MethodPost, "/collect", validCollectBody("wk_live"), map[string]string{
+		"Origin":          "https://docs.example.com",
+		"User-Agent":      "Mozilla/5.0",
+		"X-Forwarded-For": "203.0.113.10",
+	})
+
+	assertFiltered(t, ctx, bus)
+	logText := logs.String()
+	for _, want := range []string{
+		"collect filtered:",
+		"event_id=evt_1",
+		"tenant_id=tenant_control",
+		"project_id=project_control",
+		"source_id=source_control",
+		"reason=internal ip",
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected audit log to contain %q, got %q", want, logText)
+		}
+	}
+	if strings.Contains(logText, "203.0.113.10") {
+		t.Fatalf("expected audit log to omit raw ip, got %q", logText)
+	}
+}
+
 func TestTrackerRouteReturnsJavaScript(t *testing.T) {
 	handler, _ := newTestHandler(t, testSourceConfig(), false)
 
