@@ -419,3 +419,4 @@ components:
         pressure:
           type: string
           enum: [low, medium, high]
+          description: Coarse read-side triage bucket derived from query evidence, not an SLA or autoscaling signal

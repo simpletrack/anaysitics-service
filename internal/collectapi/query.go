@@ -73,7 +73,7 @@ type queryEvidenceResponse struct {
 	UsesPropertyTable   bool   `json:"uses_property_table"`   // UsesPropertyTable reports whether the typed property table participates
 	SortField           string `json:"sort_field,omitempty"`  // SortField is the effective allowlisted sort field
 	SortDirection       string `json:"sort_direction"`        // SortDirection is the effective allowlisted sort direction
-	Pressure            string `json:"pressure"`              // Pressure is the initial low/medium/high read-side threshold bucket
+	Pressure            string `json:"pressure"`              // Pressure is the coarse low/medium/high read-side triage bucket
 }
 
 const (
