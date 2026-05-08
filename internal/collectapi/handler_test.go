@@ -550,6 +550,52 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 }
 
+func TestQueryPressureBuckets(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		evidence storage.EventQueryEvidence
+		want     string
+	}{
+		{
+			name: "low",
+			evidence: storage.EventQueryEvidence{
+				ScalarFilterCount:   2,
+				PropertyFilterCount: 0,
+			},
+			want: "low",
+		},
+		{
+			name: "medium",
+			evidence: storage.EventQueryEvidence{
+				ScalarFilterCount:   4,
+				PropertyFilterCount: 2,
+			},
+			want: "medium",
+		},
+		{
+			name: "high",
+			evidence: storage.EventQueryEvidence{
+				ScalarFilterCount:   5,
+				PropertyFilterCount: 3,
+			},
+			want: "high",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := queryPressure(tc.evidence); got != tc.want {
+				t.Fatalf("expected %s pressure, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestEventsQuerySupportsReaderWithoutEvidence(t *testing.T) {
 	reader := &legacyQueryReader{
 		events: []storage.EventRecord{

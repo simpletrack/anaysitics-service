@@ -76,6 +76,12 @@ type queryEvidenceResponse struct {
 	Pressure            string `json:"pressure"`              // Pressure is the initial low/medium/high read-side threshold bucket
 }
 
+const (
+	pressureLow    = "low"
+	pressureMedium = "medium"
+	pressureHigh   = "high"
+)
+
 type propertyFilterPayload struct {
 	Scope    string `json:"scope"`
 	Name     string `json:"name"`
@@ -562,16 +568,20 @@ func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidence
 	}
 }
 
-// queryPressure assigns the initial read-side pressure bucket for optimization triage.
+// queryPressure assigns a coarse read-side triage bucket.
+//
+// The bucket is intentionally simple: it helps operators compare query shapes
+// and decide whether a request deserves follow-up optimization work, but it is
+// not a hard latency SLA or an automatic scaling trigger.
 func queryPressure(evidence storage.EventQueryEvidence) string {
 	totalFilters := evidence.ScalarFilterCount + evidence.PropertyFilterCount
 	switch {
 	case evidence.PropertyFilterCount == 0 && evidence.ScalarFilterCount <= 2:
-		return "low"
+		return pressureLow
 	case evidence.PropertyFilterCount <= 2 && totalFilters <= 6:
-		return "medium"
+		return pressureMedium
 	default:
-		return "high"
+		return pressureHigh
 	}
 }
 
