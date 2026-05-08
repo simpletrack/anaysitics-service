@@ -359,6 +359,8 @@ components:
           format: date-time
         limit:
           type: integer
+        query_evidence:
+          $ref: "#/components/schemas/QueryEvidence"
     EventsResponse:
       type: object
       required: [source, items, limit, offset, from, to]
@@ -379,3 +381,41 @@ components:
         to:
           type: string
           format: date-time
+        query_evidence:
+          $ref: "#/components/schemas/QueryEvidence"
+    QueryEvidence:
+      type: object
+      required:
+        - family
+        - read_path
+        - optimization
+        - scalar_filter_count
+        - property_filter_count
+        - uses_property_table
+        - sort_direction
+        - pressure
+      properties:
+        family:
+          type: string
+          enum: [events, realtime]
+        read_path:
+          type: string
+          example: fact_events
+        optimization:
+          type: string
+          example: direct_fact_table
+        scalar_filter_count:
+          type: integer
+        property_filter_count:
+          type: integer
+        uses_property_table:
+          type: boolean
+        sort_field:
+          type: string
+          enum: [event_time, received_at, event_name]
+        sort_direction:
+          type: string
+          enum: [asc, desc]
+        pressure:
+          type: string
+          enum: [low, medium, high]

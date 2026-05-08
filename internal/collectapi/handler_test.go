@@ -352,6 +352,16 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 				Source:     "browser",
 			},
 		},
+		realtimeEvidence: storage.EventQueryEvidence{
+			Family:              storage.EventQueryFamilyRealtime,
+			ReadPath:            storage.EventReadPathFactEvents,
+			Optimization:        storage.EventQueryOptimizationDirectFactTable,
+			ScalarFilterCount:   1,
+			PropertyFilterCount: 0,
+			UsesPropertyTable:   false,
+			SortField:           storage.EventSortByEventTime,
+			SortDirection:       storage.EventSortDescending,
+		},
 	}
 	handler := newTestQueryHandler(t, testSourceConfig(), reader)
 
@@ -385,6 +395,12 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	}
 	if got := response.Items[0].VisitID; got != "visit_1" {
 		t.Fatalf("expected realtime visit id %q, got %q", "visit_1", got)
+	}
+	if response.QueryEvidence == nil {
+		t.Fatal("expected realtime query evidence")
+	}
+	if response.QueryEvidence.Pressure != "low" {
+		t.Fatalf("expected realtime pressure low, got %#v", response.QueryEvidence)
 	}
 }
 
@@ -475,6 +491,16 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 				Source:         "browser",
 			},
 		},
+		eventsEvidence: storage.EventQueryEvidence{
+			Family:              storage.EventQueryFamilyEvents,
+			ReadPath:            storage.EventReadPathFactEvents,
+			Optimization:        storage.EventQueryOptimizationDirectFactTable,
+			ScalarFilterCount:   5,
+			PropertyFilterCount: 2,
+			UsesPropertyTable:   true,
+			SortField:           storage.EventSortByReceivedAt,
+			SortDirection:       storage.EventSortAscending,
+		},
 	}
 	handler := newTestQueryHandler(t, testSourceConfig(), reader)
 
@@ -515,6 +541,52 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	if got := response.Items[0].VisitID; got != "visit_2" {
 		t.Fatalf("expected events visit id %q, got %q", "visit_2", got)
+	}
+	if response.QueryEvidence == nil {
+		t.Fatal("expected events query evidence")
+	}
+	if response.QueryEvidence.Pressure != "high" {
+		t.Fatalf("expected events pressure high, got %#v", response.QueryEvidence)
+	}
+}
+
+func TestEventsQuerySupportsReaderWithoutEvidence(t *testing.T) {
+	reader := &legacyQueryReader{
+		events: []storage.EventRecord{
+			{
+				ID:         "evt_legacy",
+				TenantID:   "tenant_control",
+				ProjectID:  "project_control",
+				SourceID:   "source_control",
+				SourceType: "web",
+				EventName:  "page_view",
+				DistinctID: "visitor_legacy",
+				EventTime:  time.Date(2026, 5, 3, 9, 20, 0, 0, time.UTC),
+				ReceivedAt: time.Date(2026, 5, 3, 9, 20, 1, 0, time.UTC),
+			},
+		},
+	}
+	handler := newTestQueryHandler(t, testSourceConfig(), reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected events response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected legacy reader events call, got %d", reader.eventsCalls)
+	}
+	var response queryEventsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode events response failed: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one legacy item, got %d", len(response.Items))
+	}
+	if response.QueryEvidence != nil {
+		t.Fatalf("legacy reader should omit query evidence, got %#v", response.QueryEvidence)
 	}
 }
 
@@ -1253,13 +1325,15 @@ func (b *recordingBus) Subscribe(context.Context, eventbus.ConsumerGroup, eventb
 }
 
 type recordingQueryReader struct {
-	eventsQuery   storage.EventListQuery
-	realtimeQuery storage.RealtimeQuery
-	events        []storage.EventRecord
-	realtime      []storage.EventRecord
-	eventsCalls   int
-	realtimeCalls int
-	err           error
+	eventsQuery      storage.EventListQuery
+	realtimeQuery    storage.RealtimeQuery
+	events           []storage.EventRecord
+	realtime         []storage.EventRecord
+	eventsEvidence   storage.EventQueryEvidence
+	realtimeEvidence storage.EventQueryEvidence
+	eventsCalls      int
+	realtimeCalls    int
+	err              error
 }
 
 type countingResolver struct {
@@ -1281,7 +1355,51 @@ func (r *recordingQueryReader) ListEvents(_ context.Context, query storage.Event
 	return append([]storage.EventRecord(nil), r.events...), nil
 }
 
+func (r *recordingQueryReader) ListEventsWithEvidence(ctx context.Context, query storage.EventListQuery) (storage.EventQueryResult, error) {
+	records, err := r.ListEvents(ctx, query)
+	if err != nil {
+		return storage.EventQueryResult{}, err
+	}
+	return storage.EventQueryResult{Records: records, Evidence: r.eventsEvidence}, nil
+}
+
 func (r *recordingQueryReader) ListRealtime(_ context.Context, query storage.RealtimeQuery) ([]storage.EventRecord, error) {
+	r.realtimeCalls++
+	r.realtimeQuery = query
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]storage.EventRecord(nil), r.realtime...), nil
+}
+
+func (r *recordingQueryReader) ListRealtimeWithEvidence(ctx context.Context, query storage.RealtimeQuery) (storage.EventQueryResult, error) {
+	records, err := r.ListRealtime(ctx, query)
+	if err != nil {
+		return storage.EventQueryResult{}, err
+	}
+	return storage.EventQueryResult{Records: records, Evidence: r.realtimeEvidence}, nil
+}
+
+type legacyQueryReader struct {
+	eventsQuery   storage.EventListQuery // eventsQuery records the last Events query
+	realtimeQuery storage.RealtimeQuery  // realtimeQuery records the last Realtime query
+	events        []storage.EventRecord  // events are returned from ListEvents
+	realtime      []storage.EventRecord  // realtime rows are returned from ListRealtime
+	eventsCalls   int                    // eventsCalls counts legacy Events reads
+	realtimeCalls int                    // realtimeCalls counts legacy Realtime reads
+	err           error                  // err forces legacy reads to fail
+}
+
+func (r *legacyQueryReader) ListEvents(_ context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {
+	r.eventsCalls++
+	r.eventsQuery = query
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]storage.EventRecord(nil), r.events...), nil
+}
+
+func (r *legacyQueryReader) ListRealtime(_ context.Context, query storage.RealtimeQuery) ([]storage.EventRecord, error) {
 	r.realtimeCalls++
 	r.realtimeQuery = query
 	if r.err != nil {

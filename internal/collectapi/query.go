@@ -1,6 +1,7 @@
 package collectapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,19 +47,33 @@ type queryEventResponse struct {
 }
 
 type queryEventsResponse struct {
-	Source querySourceResponse  `json:"source"`
-	Items  []queryEventResponse `json:"items"`
-	Limit  int                  `json:"limit"`
-	Offset int                  `json:"offset"`
-	From   string               `json:"from"`
-	To     string               `json:"to"`
+	Source        querySourceResponse    `json:"source"`                   // Source reports the trusted runtime source boundary
+	Items         []queryEventResponse   `json:"items"`                    // Items are the returned Events rows
+	Limit         int                    `json:"limit"`                    // Limit is the effective caller-requested page size before core caps
+	Offset        int                    `json:"offset"`                   // Offset is the Events pagination offset
+	From          string                 `json:"from"`                     // From is the inclusive event-time lower bound
+	To            string                 `json:"to"`                       // To is the exclusive event-time upper bound
+	QueryEvidence *queryEvidenceResponse `json:"query_evidence,omitempty"` // QueryEvidence explains the read-side path chosen by analytics-core
 }
 
 type queryRealtimeResponse struct {
-	Source querySourceResponse  `json:"source"`
-	Items  []queryEventResponse `json:"items"`
-	Since  string               `json:"since"`
-	Limit  int                  `json:"limit"`
+	Source        querySourceResponse    `json:"source"`                   // Source reports the trusted runtime source boundary
+	Items         []queryEventResponse   `json:"items"`                    // Items are the returned Realtime rows
+	Since         string                 `json:"since"`                    // Since is the inclusive recent-event lower bound
+	Limit         int                    `json:"limit"`                    // Limit is the effective caller-requested page size before core caps
+	QueryEvidence *queryEvidenceResponse `json:"query_evidence,omitempty"` // QueryEvidence explains the read-side path chosen by analytics-core
+}
+
+type queryEvidenceResponse struct {
+	Family              string `json:"family"`                // Family is the product query family, such as events or realtime
+	ReadPath            string `json:"read_path"`             // ReadPath is the logical read model used by the query
+	Optimization        string `json:"optimization"`          // Optimization is the physical acceleration strategy currently selected
+	ScalarFilterCount   int    `json:"scalar_filter_count"`   // ScalarFilterCount counts non-property predicates
+	PropertyFilterCount int    `json:"property_filter_count"` // PropertyFilterCount counts typed property predicates
+	UsesPropertyTable   bool   `json:"uses_property_table"`   // UsesPropertyTable reports whether the typed property table participates
+	SortField           string `json:"sort_field,omitempty"`  // SortField is the effective allowlisted sort field
+	SortDirection       string `json:"sort_direction"`        // SortDirection is the effective allowlisted sort direction
+	Pressure            string `json:"pressure"`              // Pressure is the initial low/medium/high read-side threshold bucket
 }
 
 type propertyFilterPayload struct {
@@ -100,7 +115,7 @@ func (h *Handler) handleRealtime(ctx fiber.Ctx) error {
 
 	// Execute through analytics-core so the service only owns HTTP decoding and
 	// response shaping, not query semantics.
-	records, err := h.opts.QueryReader.ListRealtime(ctx.Context(), storage.RealtimeQuery{
+	records, evidence, err := h.listRealtime(ctx.Context(), storage.RealtimeQuery{
 		TenantID:  source.TenantID,
 		ProjectID: source.ProjectID,
 		SourceID:  source.SourceID,
@@ -112,10 +127,11 @@ func (h *Handler) handleRealtime(ctx fiber.Ctx) error {
 	}
 
 	return h.writeJSON(ctx, fiber.StatusOK, queryRealtimeResponse{
-		Source: toQuerySourceResponse(source),
-		Items:  toQueryEventResponses(records),
-		Since:  since.UTC().Format(time.RFC3339Nano),
-		Limit:  limit,
+		Source:        toQuerySourceResponse(source),
+		Items:         toQueryEventResponses(records),
+		Since:         since.UTC().Format(time.RFC3339Nano),
+		Limit:         limit,
+		QueryEvidence: evidence,
 	})
 }
 
@@ -163,7 +179,7 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 	// Let analytics-core own the allowlisted sort and filter semantics. The
 	// service only maps the public query string into the core request contract.
 	eventFilters := eventColumnFilters(ctx)
-	records, err := h.opts.QueryReader.ListEvents(ctx.Context(), storage.EventListQuery{
+	records, evidence, err := h.listEvents(ctx.Context(), storage.EventListQuery{
 		TenantID:                 source.TenantID,
 		ProjectID:                source.ProjectID,
 		SourceID:                 source.SourceID,
@@ -184,13 +200,44 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 	}
 
 	return h.writeJSON(ctx, fiber.StatusOK, queryEventsResponse{
-		Source: toQuerySourceResponse(source),
-		Items:  toQueryEventResponses(records),
-		Limit:  limit,
-		Offset: offset,
-		From:   from.UTC().Format(time.RFC3339Nano),
-		To:     to.UTC().Format(time.RFC3339Nano),
+		Source:        toQuerySourceResponse(source),
+		Items:         toQueryEventResponses(records),
+		Limit:         limit,
+		Offset:        offset,
+		From:          from.UTC().Format(time.RFC3339Nano),
+		To:            to.UTC().Format(time.RFC3339Nano),
+		QueryEvidence: evidence,
 	})
+}
+
+func (h *Handler) listRealtime(ctx context.Context, query storage.RealtimeQuery) ([]storage.EventRecord, *queryEvidenceResponse, error) {
+	// Prefer evidence-aware readers when available. The fallback keeps tests and
+	// custom readers source-compatible while production ClickHouse readback can
+	// surface read-side decisions to operators and SaaS pages.
+	if reader, ok := h.opts.QueryReader.(storage.EventReaderWithEvidence); ok {
+		result, err := reader.ListRealtimeWithEvidence(ctx, query)
+		if err != nil {
+			return nil, nil, err
+		}
+		return result.Records, toQueryEvidenceResponse(result.Evidence), nil
+	}
+	records, err := h.opts.QueryReader.ListRealtime(ctx, query)
+	return records, nil, err
+}
+
+func (h *Handler) listEvents(ctx context.Context, query storage.EventListQuery) ([]storage.EventRecord, *queryEvidenceResponse, error) {
+	// Keep query evidence optional at the interface boundary. This avoids
+	// coupling the HTTP layer to ClickHouse while still letting the standard
+	// runtime expose the plan metadata produced by analytics-core.
+	if reader, ok := h.opts.QueryReader.(storage.EventReaderWithEvidence); ok {
+		result, err := reader.ListEventsWithEvidence(ctx, query)
+		if err != nil {
+			return nil, nil, err
+		}
+		return result.Records, toQueryEvidenceResponse(result.Evidence), nil
+	}
+	records, err := h.opts.QueryReader.ListEvents(ctx, query)
+	return records, nil, err
 }
 
 func eventColumnFilters(ctx fiber.Ctx) []storage.EventFilter {
@@ -495,6 +542,37 @@ func toQueryEventResponses(records []storage.EventRecord) []queryEventResponse {
 		responses = append(responses, toQueryEventResponse(record))
 	}
 	return responses
+}
+
+// toQueryEvidenceResponse converts analytics-core evidence into the internal API shape.
+func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidenceResponse {
+	if evidence.Family == "" {
+		return nil
+	}
+	return &queryEvidenceResponse{
+		Family:              string(evidence.Family),
+		ReadPath:            string(evidence.ReadPath),
+		Optimization:        string(evidence.Optimization),
+		ScalarFilterCount:   evidence.ScalarFilterCount,
+		PropertyFilterCount: evidence.PropertyFilterCount,
+		UsesPropertyTable:   evidence.UsesPropertyTable,
+		SortField:           string(evidence.SortField),
+		SortDirection:       string(evidence.SortDirection),
+		Pressure:            queryPressure(evidence),
+	}
+}
+
+// queryPressure assigns the initial read-side pressure bucket for optimization triage.
+func queryPressure(evidence storage.EventQueryEvidence) string {
+	totalFilters := evidence.ScalarFilterCount + evidence.PropertyFilterCount
+	switch {
+	case evidence.PropertyFilterCount == 0 && evidence.ScalarFilterCount <= 2:
+		return "low"
+	case evidence.PropertyFilterCount <= 2 && totalFilters <= 6:
+		return "medium"
+	default:
+		return "high"
+	}
 }
 
 func toQueryEventResponse(record storage.EventRecord) queryEventResponse {
