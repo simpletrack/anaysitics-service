@@ -68,6 +68,11 @@ type queryEvidenceResponse struct {
 	Family              string `json:"family"`                // Family is the product query family, such as events or realtime
 	ReadPath            string `json:"read_path"`             // ReadPath is the logical read model used by the query
 	Optimization        string `json:"optimization"`          // Optimization is the physical acceleration strategy currently selected
+	EffectiveLimit      int    `json:"effective_limit"`       // EffectiveLimit is the builder-capped row limit used by analytics-core
+	Offset              int    `json:"offset"`                // Offset is the Events pagination offset after validation
+	HasTimeLowerBound   bool   `json:"has_time_lower_bound"`  // HasTimeLowerBound reports whether the query constrains the start time
+	HasTimeUpperBound   bool   `json:"has_time_upper_bound"`  // HasTimeUpperBound reports whether the query constrains the end time
+	TimeWindowSeconds   int64  `json:"time_window_seconds"`   // TimeWindowSeconds is the bounded from/to window when both edges are present
 	ScalarFilterCount   int    `json:"scalar_filter_count"`   // ScalarFilterCount counts non-property predicates
 	PropertyFilterCount int    `json:"property_filter_count"` // PropertyFilterCount counts typed property predicates
 	UsesPropertyTable   bool   `json:"uses_property_table"`   // UsesPropertyTable reports whether the typed property table participates
@@ -559,6 +564,11 @@ func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidence
 		Family:              string(evidence.Family),
 		ReadPath:            string(evidence.ReadPath),
 		Optimization:        string(evidence.Optimization),
+		EffectiveLimit:      evidence.EffectiveLimit,
+		Offset:              evidence.Offset,
+		HasTimeLowerBound:   evidence.HasTimeLowerBound,
+		HasTimeUpperBound:   evidence.HasTimeUpperBound,
+		TimeWindowSeconds:   evidence.TimeWindowSeconds,
 		ScalarFilterCount:   evidence.ScalarFilterCount,
 		PropertyFilterCount: evidence.PropertyFilterCount,
 		UsesPropertyTable:   evidence.UsesPropertyTable,

@@ -389,6 +389,11 @@ components:
         - family
         - read_path
         - optimization
+        - effective_limit
+        - offset
+        - has_time_lower_bound
+        - has_time_upper_bound
+        - time_window_seconds
         - scalar_filter_count
         - property_filter_count
         - uses_property_table
@@ -404,6 +409,22 @@ components:
         optimization:
           type: string
           example: direct_fact_table
+        effective_limit:
+          type: integer
+          description: Builder-capped row limit used by analytics-core.
+        offset:
+          type: integer
+          description: Events pagination offset after validation. Realtime reports 0.
+        has_time_lower_bound:
+          type: boolean
+          description: Whether the query constrains the start time.
+        has_time_upper_bound:
+          type: boolean
+          description: Whether the query constrains the end time.
+        time_window_seconds:
+          type: integer
+          format: int64
+          description: Bounded from/to window in seconds when both edges are present; 0 for open-ended Realtime.
         scalar_filter_count:
           type: integer
         property_filter_count:

@@ -356,6 +356,11 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 			Family:              storage.EventQueryFamilyRealtime,
 			ReadPath:            storage.EventReadPathFactEvents,
 			Optimization:        storage.EventQueryOptimizationDirectFactTable,
+			EffectiveLimit:      50,
+			Offset:              0,
+			HasTimeLowerBound:   true,
+			HasTimeUpperBound:   false,
+			TimeWindowSeconds:   0,
 			ScalarFilterCount:   1,
 			PropertyFilterCount: 0,
 			UsesPropertyTable:   false,
@@ -401,6 +406,12 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	}
 	if response.QueryEvidence.Pressure != "low" {
 		t.Fatalf("expected realtime pressure low, got %#v", response.QueryEvidence)
+	}
+	if response.QueryEvidence.EffectiveLimit != 50 || response.QueryEvidence.Offset != 0 {
+		t.Fatalf("expected realtime shape evidence limit/offset, got %#v", response.QueryEvidence)
+	}
+	if !response.QueryEvidence.HasTimeLowerBound || response.QueryEvidence.HasTimeUpperBound || response.QueryEvidence.TimeWindowSeconds != 0 {
+		t.Fatalf("expected realtime open-ended time evidence, got %#v", response.QueryEvidence)
 	}
 }
 
@@ -495,6 +506,11 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 			Family:              storage.EventQueryFamilyEvents,
 			ReadPath:            storage.EventReadPathFactEvents,
 			Optimization:        storage.EventQueryOptimizationDirectFactTable,
+			EffectiveLimit:      25,
+			Offset:              3,
+			HasTimeLowerBound:   true,
+			HasTimeUpperBound:   true,
+			TimeWindowSeconds:   3600,
 			ScalarFilterCount:   5,
 			PropertyFilterCount: 2,
 			UsesPropertyTable:   true,
@@ -547,6 +563,12 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	if response.QueryEvidence.Pressure != "high" {
 		t.Fatalf("expected events pressure high, got %#v", response.QueryEvidence)
+	}
+	if response.QueryEvidence.EffectiveLimit != 25 || response.QueryEvidence.Offset != 3 {
+		t.Fatalf("expected events shape evidence limit/offset, got %#v", response.QueryEvidence)
+	}
+	if !response.QueryEvidence.HasTimeLowerBound || !response.QueryEvidence.HasTimeUpperBound || response.QueryEvidence.TimeWindowSeconds != 3600 {
+		t.Fatalf("expected one-hour events time evidence, got %#v", response.QueryEvidence)
 	}
 }
 
