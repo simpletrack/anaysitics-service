@@ -182,7 +182,17 @@ for every enabled source in the current runtime config. Production deployments
 should leave it off until schema review, migration ordering, and rollback
 procedures are owned by the deployment pipeline. The runtime worker wires Redis
 Stream, MySQL checkpoint guards, ClickHouse native batch writers, and typed
-property indexing.
+property indexing. It also records observed event and user property selectors in
+the MySQL `property_catalog` table by default. That catalog is metadata
+governance for UI filter suggestions and future allowlists; it does not replace
+the ClickHouse `_properties` table used for typed property filtering. When
+`ANALYTICS_SERVICE_MYSQL_AUTO_MIGRATE=false`, startup now requires the table to
+already exist so a missing metadata table fails before Redis consumers can nack
+accepted messages repeatedly. Disable cataloging only for narrow diagnostics:
+
+```powershell
+$env:ANALYTICS_SERVICE_PROPERTY_CATALOGING='false'
+```
 
 For a throwaway demo without Redis, opt into the non-durable in-memory queue:
 

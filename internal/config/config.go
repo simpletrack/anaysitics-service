@@ -73,6 +73,7 @@ type Config struct {
 	ClickHouseTablePrefix             string                      // ClickHouseTablePrefix is the safe prefix for routed event tables
 	ClickHouseAutoMigrate             bool                        // ClickHouseAutoMigrate creates routed ClickHouse event tables at startup
 	PropertyIndexing                  bool                        // PropertyIndexing writes typed property rows after primary events
+	PropertyCataloging                bool                        // PropertyCataloging records observed property selectors in MySQL metadata
 	SourceResolver                    string                      // SourceResolver selects memory or http runtime source resolution
 	ControlPlaneURL                   string                      // ControlPlaneURL is the SaaS runtime source resolver endpoint
 	ControlPlaneToken                 string                      // ControlPlaneToken authenticates service-to-SaaS config reads
@@ -128,6 +129,7 @@ func LoadFromEnv() (Config, error) {
 		ClickHouseTablePrefix:             envString("ANALYTICS_SERVICE_CLICKHOUSE_TABLE_PREFIX", defaultTablePrefix),
 		ClickHouseAutoMigrate:             envBool("ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE", false),
 		PropertyIndexing:                  envBool("ANALYTICS_SERVICE_PROPERTY_INDEXING", true),
+		PropertyCataloging:                envBool("ANALYTICS_SERVICE_PROPERTY_CATALOGING", true),
 		SourceResolver:                    strings.ToLower(envString("ANALYTICS_SERVICE_SOURCE_RESOLVER", defaultResolver)),
 		ControlPlaneURL:                   envString("ANALYTICS_SERVICE_CONTROL_PLANE_URL", ""),
 		ControlPlaneToken:                 envString("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", ""),

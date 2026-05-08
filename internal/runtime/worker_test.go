@@ -244,6 +244,53 @@ func TestEnsureClickHouseTablesCreatesAllEnabledRuntimeSources(t *testing.T) {
 	}
 }
 
+func TestPropertyCatalogingRequiresExistingTableWhenAutoMigrationIsDisabled(t *testing.T) {
+	if !propertyCatalogingRequiresExistingTable(config.Config{
+		PropertyCataloging: true,
+		MySQLAutoMigrate:   false,
+	}) {
+		t.Fatal("expected property cataloging to require an existing table")
+	}
+}
+
+func TestPropertyCatalogingSkipsExistingTableRequirementWhenDisabled(t *testing.T) {
+	if propertyCatalogingRequiresExistingTable(config.Config{
+		PropertyCataloging: false,
+		MySQLAutoMigrate:   false,
+	}) {
+		t.Fatal("did not expect a table requirement when property cataloging is disabled")
+	}
+}
+
+func TestPropertyCatalogingSkipsExistingTableRequirementWhenAutoMigrating(t *testing.T) {
+	if propertyCatalogingRequiresExistingTable(config.Config{
+		PropertyCataloging: true,
+		MySQLAutoMigrate:   true,
+	}) {
+		t.Fatal("did not expect a table requirement when auto migration creates catalog schema")
+	}
+}
+
+func TestRequireMySQLTableFailsWhenMetadataTableIsMissing(t *testing.T) {
+	checker := fakeMySQLTableChecker{exists: false}
+
+	err := requireMySQLTable(checker, &struct{}{}, "property_catalog")
+	if err == nil {
+		t.Fatal("expected missing property catalog table to fail")
+	}
+	if !strings.Contains(err.Error(), "property_catalog") {
+		t.Fatalf("expected error to name missing table, got %v", err)
+	}
+}
+
+func TestRequireMySQLTablePassesWhenMetadataTableExists(t *testing.T) {
+	checker := fakeMySQLTableChecker{exists: true}
+
+	if err := requireMySQLTable(checker, &struct{}{}, "property_catalog"); err != nil {
+		t.Fatalf("expected existing property catalog table to pass: %v", err)
+	}
+}
+
 func testRuntimeSource() controlplane.SourceConfig {
 	return controlplane.SourceConfig{
 		WriteKey:       "wk_live",
@@ -255,6 +302,15 @@ func testRuntimeSource() controlplane.SourceConfig {
 		VisitSalt:      "server-only-visit-salt",
 		ClientHashSalt: "server-only-client-salt",
 	}
+}
+
+type fakeMySQLTableChecker struct {
+	exists bool // exists controls the synthetic Migrator.HasTable result
+}
+
+// HasTable returns the configured metadata table existence result.
+func (c fakeMySQLTableChecker) HasTable(any) bool {
+	return c.exists
 }
 
 type fakeClickHouseTableConn struct {

@@ -77,26 +77,77 @@ func newEventWriter(ctx context.Context, cfg config.Config, mysqlDB *gorm.DB, cl
 	if err != nil {
 		return nil, err
 	}
-	if !cfg.PropertyIndexing {
-		return eventWriter, nil
-	}
 
-	propertyGuard, err := mysql.NewPropertyIndexingStatusGuard(mysqlDB)
-	if err != nil {
-		return nil, err
-	}
-	if cfg.MySQLAutoMigrate {
-		// Property checkpoints are kept separate from event checkpoints because
-		// property indexing can fail after the primary event row exists.
-		if err := propertyGuard.AutoMigrate(ctx); err != nil {
+	writer := storage.EventWriter(eventWriter)
+	if cfg.PropertyIndexing {
+		propertyGuard, err := mysql.NewPropertyIndexingStatusGuard(mysqlDB)
+		if err != nil {
+			return nil, err
+		}
+		if cfg.MySQLAutoMigrate {
+			// Property checkpoints are kept separate from event checkpoints because
+			// property indexing can fail after the primary event row exists.
+			if err := propertyGuard.AutoMigrate(ctx); err != nil {
+				return nil, err
+			}
+		}
+		propertyWriter, err := clickhouse.NewPropertyBatchWriter(clickConn, router)
+		if err != nil {
+			return nil, err
+		}
+		writer, err = storage.NewPropertyIndexingEventWriter(writer, propertyWriter, propertyGuard)
+		if err != nil {
 			return nil, err
 		}
 	}
-	propertyWriter, err := clickhouse.NewPropertyBatchWriter(clickConn, router)
-	if err != nil {
-		return nil, err
+	if cfg.PropertyCataloging {
+		catalog, err := mysql.NewPropertyCatalog(mysqlDB)
+		if err != nil {
+			return nil, err
+		}
+		if cfg.MySQLAutoMigrate {
+			// Catalog schema is still an initialization path for this new project
+			// stage. Historical migration and backfill policy stays out of runtime.
+			if err := catalog.AutoMigrate(ctx); err != nil {
+				return nil, err
+			}
+		} else if propertyCatalogingRequiresExistingTable(cfg) {
+			// Default cataloging must fail during startup when operators have not
+			// initialized the metadata table. Failing here prevents Redis messages
+			// from being accepted and repeatedly nacked by a missing MySQL table.
+			if err := requireMySQLTable(mysqlDB.WithContext(ctx).Migrator(), &mysql.PropertyCatalogEntry{}, "property_catalog"); err != nil {
+				return nil, err
+			}
+		}
+		writer, err = storage.NewPropertyCatalogingEventWriter(writer, catalog)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return storage.NewPropertyIndexingEventWriter(eventWriter, propertyWriter, propertyGuard)
+	return writer, nil
+}
+
+// propertyCatalogingRequiresExistingTable reports whether runtime should validate property_catalog.
+func propertyCatalogingRequiresExistingTable(cfg config.Config) bool {
+	return cfg.PropertyCataloging && !cfg.MySQLAutoMigrate
+}
+
+type mysqlTableChecker interface {
+	// HasTable reports whether the model table exists in the configured MySQL schema.
+	HasTable(any) bool
+}
+
+// requireMySQLTable fails startup when an opt-in runtime table is missing.
+func requireMySQLTable(checker mysqlTableChecker, model any, name string) error {
+	if checker == nil {
+		return fmt.Errorf("mysql table %q requires schema checker", name)
+	}
+	// Use GORM's migrator only as a read-side schema check. Runtime still does
+	// not own production migration ordering when auto migration is disabled.
+	if !checker.HasTable(model) {
+		return fmt.Errorf("mysql table %q is required when property cataloging is enabled", name)
+	}
+	return nil
 }
 
 // ensureClickHouseTables applies optional local DDL before the fail-closed schema check.
