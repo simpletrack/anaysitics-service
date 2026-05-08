@@ -582,8 +582,22 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 			ScalarFilterCount:   5,
 			PropertyFilterCount: 2,
 			UsesPropertyTable:   true,
-			SortField:           storage.EventSortByReceivedAt,
-			SortDirection:       storage.EventSortAscending,
+			PropertyFilters: []storage.EventPropertyFilterEvidence{
+				{
+					Scope:     storage.PropertyScopeEvent,
+					Name:      "button",
+					ValueType: storage.PropertyValueString,
+					Operator:  storage.EventFilterEquals,
+				},
+				{
+					Scope:     storage.PropertyScopeUser,
+					Name:      "plan",
+					ValueType: storage.PropertyValueString,
+					Operator:  storage.EventFilterNotEquals,
+				},
+			},
+			SortField:     storage.EventSortByReceivedAt,
+			SortDirection: storage.EventSortAscending,
 		},
 	}
 	handler := newTestQueryHandler(t, testSourceConfig(), reader)
@@ -637,6 +651,21 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 	if !response.QueryEvidence.HasTimeLowerBound || !response.QueryEvidence.HasTimeUpperBound || response.QueryEvidence.TimeWindowSeconds != 3600 {
 		t.Fatalf("expected one-hour events time evidence, got %#v", response.QueryEvidence)
+	}
+	if len(response.QueryEvidence.PropertyFilters) != 2 {
+		t.Fatalf("expected property filter evidence shapes, got %#v", response.QueryEvidence.PropertyFilters)
+	}
+	if response.QueryEvidence.PropertyFilters[0].Name != "button" ||
+		response.QueryEvidence.PropertyFilters[0].Scope != "event" ||
+		response.QueryEvidence.PropertyFilters[0].ValueType != "string" ||
+		response.QueryEvidence.PropertyFilters[0].Operator != "eq" {
+		t.Fatalf("expected event button property evidence, got %#v", response.QueryEvidence.PropertyFilters[0])
+	}
+	if response.QueryEvidence.PropertyFilters[1].Name != "plan" ||
+		response.QueryEvidence.PropertyFilters[1].Scope != "user" ||
+		response.QueryEvidence.PropertyFilters[1].ValueType != "string" ||
+		response.QueryEvidence.PropertyFilters[1].Operator != "neq" {
+		t.Fatalf("expected user plan property evidence, got %#v", response.QueryEvidence.PropertyFilters[1])
 	}
 }
 

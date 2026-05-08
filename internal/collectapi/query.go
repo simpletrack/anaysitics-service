@@ -81,20 +81,29 @@ type propertyCatalogItemResponse struct {
 }
 
 type queryEvidenceResponse struct {
-	Family              string `json:"family"`                // Family is the product query family, such as events or realtime
-	ReadPath            string `json:"read_path"`             // ReadPath is the logical read model used by the query
-	Optimization        string `json:"optimization"`          // Optimization is the physical acceleration strategy currently selected
-	EffectiveLimit      int    `json:"effective_limit"`       // EffectiveLimit is the builder-capped row limit used by analytics-core
-	Offset              int    `json:"offset"`                // Offset is the Events pagination offset after validation
-	HasTimeLowerBound   bool   `json:"has_time_lower_bound"`  // HasTimeLowerBound reports whether the query constrains the start time
-	HasTimeUpperBound   bool   `json:"has_time_upper_bound"`  // HasTimeUpperBound reports whether the query constrains the end time
-	TimeWindowSeconds   int64  `json:"time_window_seconds"`   // TimeWindowSeconds is the bounded from/to window when both edges are present
-	ScalarFilterCount   int    `json:"scalar_filter_count"`   // ScalarFilterCount counts non-property predicates
-	PropertyFilterCount int    `json:"property_filter_count"` // PropertyFilterCount counts typed property predicates
-	UsesPropertyTable   bool   `json:"uses_property_table"`   // UsesPropertyTable reports whether the typed property table participates
-	SortField           string `json:"sort_field,omitempty"`  // SortField is the effective allowlisted sort field
-	SortDirection       string `json:"sort_direction"`        // SortDirection is the effective allowlisted sort direction
-	Pressure            string `json:"pressure"`              // Pressure is the coarse low/medium/high read-side triage bucket
+	Family              string                                `json:"family"`                     // Family is the product query family, such as events or realtime
+	ReadPath            string                                `json:"read_path"`                  // ReadPath is the logical read model used by the query
+	Optimization        string                                `json:"optimization"`               // Optimization is the physical acceleration strategy currently selected
+	EffectiveLimit      int                                   `json:"effective_limit"`            // EffectiveLimit is the builder-capped row limit used by analytics-core
+	Offset              int                                   `json:"offset"`                     // Offset is the Events pagination offset after validation
+	HasTimeLowerBound   bool                                  `json:"has_time_lower_bound"`       // HasTimeLowerBound reports whether the query constrains the start time
+	HasTimeUpperBound   bool                                  `json:"has_time_upper_bound"`       // HasTimeUpperBound reports whether the query constrains the end time
+	TimeWindowSeconds   int64                                 `json:"time_window_seconds"`        // TimeWindowSeconds is the bounded from/to window when both edges are present
+	ScalarFilterCount   int                                   `json:"scalar_filter_count"`        // ScalarFilterCount counts non-property predicates
+	PropertyFilterCount int                                   `json:"property_filter_count"`      // PropertyFilterCount counts typed property predicates
+	UsesPropertyTable   bool                                  `json:"uses_property_table"`        // UsesPropertyTable reports whether the typed property table participates
+	PropertyFilters     []queryPropertyFilterEvidenceResponse `json:"property_filters,omitempty"` // PropertyFilters records typed property predicate shapes without values
+	SortField           string                                `json:"sort_field,omitempty"`       // SortField is the effective allowlisted sort field
+	SortDirection       string                                `json:"sort_direction"`             // SortDirection is the effective allowlisted sort direction
+	Pressure            string                                `json:"pressure"`                   // Pressure is the coarse low/medium/high read-side triage bucket
+}
+
+// queryPropertyFilterEvidenceResponse describes one property predicate shape without its value.
+type queryPropertyFilterEvidenceResponse struct {
+	Scope     string `json:"scope"`      // Scope is event or user
+	Name      string `json:"name"`       // Name is the normalized property key
+	ValueType string `json:"value_type"` // ValueType is null, string, number, or bool
+	Operator  string `json:"operator"`   // Operator is the allowlisted comparison shape
 }
 
 const (
@@ -660,6 +669,9 @@ func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidence
 	if evidence.Family == "" {
 		return nil
 	}
+	// Convert only the structural filter shape. The evidence intentionally
+	// leaves property values server-side so readback diagnostics do not echo
+	// user or event property values into control-plane responses.
 	return &queryEvidenceResponse{
 		Family:              string(evidence.Family),
 		ReadPath:            string(evidence.ReadPath),
@@ -672,10 +684,31 @@ func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidence
 		ScalarFilterCount:   evidence.ScalarFilterCount,
 		PropertyFilterCount: evidence.PropertyFilterCount,
 		UsesPropertyTable:   evidence.UsesPropertyTable,
+		PropertyFilters:     toPropertyFilterEvidenceResponses(evidence.PropertyFilters),
 		SortField:           string(evidence.SortField),
 		SortDirection:       string(evidence.SortDirection),
 		Pressure:            queryPressure(evidence),
 	}
+}
+
+// toPropertyFilterEvidenceResponses converts property evidence into value-free API metadata.
+func toPropertyFilterEvidenceResponses(filters []storage.EventPropertyFilterEvidence) []queryPropertyFilterEvidenceResponse {
+	if len(filters) == 0 {
+		return nil
+	}
+
+	responses := make([]queryPropertyFilterEvidenceResponse, 0, len(filters))
+	for _, filter := range filters {
+		// Keep the response shape explicit instead of exposing analytics-core
+		// enums directly; this is an internal HTTP contract, not a Go API.
+		responses = append(responses, queryPropertyFilterEvidenceResponse{
+			Scope:     string(filter.Scope),
+			Name:      filter.Name,
+			ValueType: string(filter.ValueType),
+			Operator:  string(filter.Operator),
+		})
+	}
+	return responses
 }
 
 // queryPressure assigns a coarse read-side triage bucket.

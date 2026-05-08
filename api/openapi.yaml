@@ -511,6 +511,24 @@ components:
           type: integer
         uses_property_table:
           type: boolean
+        property_filters:
+          type: array
+          description: Typed property predicate shapes included in the query evidence. Values are intentionally omitted.
+          items:
+            type: object
+            required: [scope, name, value_type, operator]
+            properties:
+              scope:
+                type: string
+                enum: [event, user]
+              name:
+                type: string
+              value_type:
+                type: string
+                enum: [null, string, number, bool]
+              operator:
+                type: string
+                enum: [eq, neq]
         sort_field:
           type: string
           enum: [event_time, received_at, event_name]
