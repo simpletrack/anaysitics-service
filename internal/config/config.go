@@ -12,21 +12,22 @@ import (
 )
 
 const (
-	defaultAddr         = ":8080"
-	defaultCollectPath  = "/collect"
-	defaultHealthPath   = "/healthz"
-	defaultTrackerPath  = "/tracker.js"
-	defaultEventsPath   = "/v1/events"
-	defaultRealtimePath = "/v1/realtime"
-	defaultSwaggerPath  = "/swagger"
-	defaultOpenAPIFile  = "api/openapi.yaml"
-	defaultTrackerFile  = "public/tracker.js"
-	defaultEventBus     = "redis"
-	defaultRedisStream  = "analytics.events"
-	defaultDeadLetters  = "analytics.events.dead"
-	defaultWorkerGroup  = "simpletrack-anaysitics-service"
-	defaultTablePrefix  = "events"
-	defaultResolver     = "memory"
+	defaultAddr           = ":8080"
+	defaultCollectPath    = "/collect"
+	defaultHealthPath     = "/healthz"
+	defaultTrackerPath    = "/tracker.js"
+	defaultEventsPath     = "/v1/events"
+	defaultRealtimePath   = "/v1/realtime"
+	defaultPropertiesPath = "/v1/properties"
+	defaultSwaggerPath    = "/swagger"
+	defaultOpenAPIFile    = "api/openapi.yaml"
+	defaultTrackerFile    = "public/tracker.js"
+	defaultEventBus       = "redis"
+	defaultRedisStream    = "analytics.events"
+	defaultDeadLetters    = "analytics.events.dead"
+	defaultWorkerGroup    = "simpletrack-anaysitics-service"
+	defaultTablePrefix    = "events"
+	defaultResolver       = "memory"
 )
 
 // QueryTokenCredential describes one internal readback bearer token and its lifecycle window.
@@ -45,6 +46,7 @@ type Config struct {
 	TrackerPath                       string                      // TrackerPath is the browser tracker route
 	EventsPath                        string                      // EventsPath is the internal Events readback route
 	RealtimePath                      string                      // RealtimePath is the internal Realtime readback route
+	PropertiesPath                    string                      // PropertiesPath is the internal property catalog read route
 	SwaggerEnabled                    bool                        // SwaggerEnabled exposes OpenAPI documentation routes
 	SwaggerPath                       string                      // SwaggerPath is the Swagger UI route prefix
 	OpenAPIFile                       string                      // OpenAPIFile is the local OpenAPI YAML or JSON file
@@ -80,9 +82,9 @@ type Config struct {
 	ControlPlaneTimeout               time.Duration               // ControlPlaneTimeout bounds each SaaS resolver request
 	ControlPlaneCacheTTL              time.Duration               // ControlPlaneCacheTTL caches resolved runtime source configs
 	ControlPlaneAllowInsecureLoopback bool                        // ControlPlaneAllowInsecureLoopback allows http loopback control-plane URLs in local development
-	QueryEnabled                      bool                        // QueryEnabled starts the internal Events and Realtime read API
-	QueryToken                        string                      // QueryToken authorizes internal Events and Realtime read requests
-	QueryTokens                       []string                    // QueryTokens are accepted internal read tokens during rotation windows
+	QueryEnabled                      bool                        // QueryEnabled starts internal Events, Realtime, and property metadata read APIs
+	QueryToken                        string                      // QueryToken authorizes internal readback requests
+	QueryTokens                       []string                    // QueryTokens are accepted internal readback tokens during rotation windows
 	QueryCredentials                  []QueryTokenCredential      // QueryCredentials are accepted internal read tokens with activation and expiry metadata
 	Sources                           []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
@@ -98,6 +100,7 @@ func LoadFromEnv() (Config, error) {
 		TrackerPath:    envString("ANALYTICS_SERVICE_TRACKER_PATH", defaultTrackerPath),
 		EventsPath:     envString("ANALYTICS_SERVICE_EVENTS_PATH", defaultEventsPath),
 		RealtimePath:   envString("ANALYTICS_SERVICE_REALTIME_PATH", defaultRealtimePath),
+		PropertiesPath: envString("ANALYTICS_SERVICE_PROPERTIES_PATH", defaultPropertiesPath),
 		SwaggerEnabled: envBool("ANALYTICS_SERVICE_SWAGGER_ENABLED", false),
 		SwaggerPath:    envString("ANALYTICS_SERVICE_SWAGGER_PATH", defaultSwaggerPath),
 		OpenAPIFile:    envString("ANALYTICS_SERVICE_OPENAPI_FILE", defaultOpenAPIFile),

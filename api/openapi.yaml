@@ -231,6 +231,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/properties:
+    get:
+      summary: List observed property definitions for one source.
+      parameters:
+        - $ref: "#/components/parameters/WriteKey"
+        - $ref: "#/components/parameters/QueryAuthorization"
+        - in: query
+          name: scope
+          schema:
+            type: string
+            enum: [event, user]
+          description: Optional property scope filter.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: Source-scoped property catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PropertyCatalogResponse"
+        "400":
+          description: Invalid query parameter or missing write key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing, expired, not-yet-valid, or unknown query token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Origin is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Property catalog API is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   parameters:
     WriteKey:
@@ -383,6 +433,36 @@ components:
           format: date-time
         query_evidence:
           $ref: "#/components/schemas/QueryEvidence"
+    PropertyCatalogItem:
+      type: object
+      required: [scope, name, value_type, first_seen_at, last_seen_at]
+      properties:
+        scope:
+          type: string
+          enum: [event, user]
+        name:
+          type: string
+        value_type:
+          type: string
+          enum: [null, string, number, bool]
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+    PropertyCatalogResponse:
+      type: object
+      required: [source, items, limit]
+      properties:
+        source:
+          $ref: "#/components/schemas/SourceResponse"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PropertyCatalogItem"
+        limit:
+          type: integer
     QueryEvidence:
       type: object
       required:

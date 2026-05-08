@@ -22,25 +22,27 @@ const contentTypeJSON = "application/json"
 
 // Options configures the analytics HTTP runtime.
 type Options struct {
-	CollectPath           string                  // CollectPath is the POST route used by browser and server SDKs
-	HealthPath            string                  // HealthPath is the GET route used by process health checks
-	TrackerPath           string                  // TrackerPath is the GET route used to serve the browser tracker
-	EventsPath            string                  // EventsPath is the GET route used by internal Events readback
-	RealtimePath          string                  // RealtimePath is the GET route used by internal Realtime readback
-	SwaggerEnabled        bool                    // SwaggerEnabled exposes the generated OpenAPI documentation UI
-	SwaggerPath           string                  // SwaggerPath is the Fiber route prefix for Swagger UI
-	OpenAPIFile           string                  // OpenAPIFile is the local OpenAPI YAML or JSON file served by Swagger UI
-	TrustForwardedHeaders bool                    // TrustForwardedHeaders enables proxy-provided client address headers
-	TrackerScript         []byte                  // TrackerScript is the JavaScript asset returned by TrackerPath
-	Now                   collect.Clock           // Now supplies deterministic receive time for tests
-	Resolver              controlplane.Resolver   // Resolver reads runtime source configuration owned by the SaaS control plane
-	Bus                   eventbus.EventBus       // Bus receives validated analytics events for ingestion
-	QueryReader           storage.EventReader     // QueryReader serves internal Events and Realtime readback when enabled
-	QueryToken            string                  // QueryToken authorizes internal Events and Realtime readback requests
-	QueryTokens           []string                // QueryTokens are accepted internal readback tokens during rotation windows
-	QueryCredentials      []QueryCredential       // QueryCredentials are accepted internal readback tokens with lifecycle metadata
-	UserAgentParser       collect.UserAgentParser // UserAgentParser optionally overrides analytics-core default UA parsing
-	GeoResolver           collect.GeoResolver     // GeoResolver optionally resolves transient client IPs into coarse geography
+	CollectPath           string                        // CollectPath is the POST route used by browser and server SDKs
+	HealthPath            string                        // HealthPath is the GET route used by process health checks
+	TrackerPath           string                        // TrackerPath is the GET route used to serve the browser tracker
+	EventsPath            string                        // EventsPath is the GET route used by internal Events readback
+	RealtimePath          string                        // RealtimePath is the GET route used by internal Realtime readback
+	PropertiesPath        string                        // PropertiesPath is the GET route used by internal property catalog reads
+	SwaggerEnabled        bool                          // SwaggerEnabled exposes the generated OpenAPI documentation UI
+	SwaggerPath           string                        // SwaggerPath is the Fiber route prefix for Swagger UI
+	OpenAPIFile           string                        // OpenAPIFile is the local OpenAPI YAML or JSON file served by Swagger UI
+	TrustForwardedHeaders bool                          // TrustForwardedHeaders enables proxy-provided client address headers
+	TrackerScript         []byte                        // TrackerScript is the JavaScript asset returned by TrackerPath
+	Now                   collect.Clock                 // Now supplies deterministic receive time for tests
+	Resolver              controlplane.Resolver         // Resolver reads runtime source configuration owned by the SaaS control plane
+	Bus                   eventbus.EventBus             // Bus receives validated analytics events for ingestion
+	QueryReader           storage.EventReader           // QueryReader serves internal Events and Realtime readback when enabled
+	PropertyCatalog       storage.PropertyCatalogReader // PropertyCatalog serves internal source-scoped property metadata reads
+	QueryToken            string                        // QueryToken authorizes internal readback requests
+	QueryTokens           []string                      // QueryTokens are accepted internal readback tokens during rotation windows
+	QueryCredentials      []QueryCredential             // QueryCredentials are accepted internal readback tokens with lifecycle metadata
+	UserAgentParser       collect.UserAgentParser       // UserAgentParser optionally overrides analytics-core default UA parsing
+	GeoResolver           collect.GeoResolver           // GeoResolver optionally resolves transient client IPs into coarse geography
 }
 
 // Handler routes health, tracker, collect, query, and documentation requests.
@@ -100,6 +102,9 @@ func newHandler(opts Options) (*Handler, error) {
 	if opts.RealtimePath == "" {
 		opts.RealtimePath = "/v1/realtime"
 	}
+	if opts.PropertiesPath == "" {
+		opts.PropertiesPath = "/v1/properties"
+	}
 	if opts.SwaggerPath == "" {
 		opts.SwaggerPath = "/swagger"
 	}
@@ -116,8 +121,8 @@ func newHandler(opts Options) (*Handler, error) {
 	// exposing the internal read routes.
 	opts.QueryCredentials = normalizeQueryCredentials(opts.QueryToken, opts.QueryTokens, opts.QueryCredentials)
 	opts.QueryTokens = nil
-	if opts.QueryReader != nil && len(opts.QueryCredentials) == 0 {
-		return nil, errors.New("query token is required when query reader is configured")
+	if (opts.QueryReader != nil || opts.PropertyCatalog != nil) && len(opts.QueryCredentials) == 0 {
+		return nil, errors.New("query token is required when internal read routes are configured")
 	}
 	if err := validateRoutePaths(opts); err != nil {
 		return nil, err
@@ -127,11 +132,12 @@ func newHandler(opts Options) (*Handler, error) {
 
 func validateRoutePaths(opts Options) error {
 	paths := map[string]string{
-		"collect path":  opts.CollectPath,
-		"health path":   opts.HealthPath,
-		"tracker path":  opts.TrackerPath,
-		"events path":   opts.EventsPath,
-		"realtime path": opts.RealtimePath,
+		"collect path":    opts.CollectPath,
+		"health path":     opts.HealthPath,
+		"tracker path":    opts.TrackerPath,
+		"events path":     opts.EventsPath,
+		"realtime path":   opts.RealtimePath,
+		"properties path": opts.PropertiesPath,
 	}
 	if opts.SwaggerEnabled {
 		paths["swagger path"] = opts.SwaggerPath
@@ -158,6 +164,7 @@ func (h *Handler) registerRoutes(app *fiber.App) {
 	app.Post(h.opts.CollectPath, h.handleCollect)
 	app.Get(h.opts.RealtimePath, h.handleRealtime)
 	app.Get(h.opts.EventsPath, h.handleEvents)
+	app.Get(h.opts.PropertiesPath, h.handleProperties)
 	if h.opts.SwaggerEnabled {
 		app.Use(h.opts.SwaggerPath, swaggerui.New(swaggerui.Config{
 			BasePath: h.opts.SwaggerPath,

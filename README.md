@@ -15,6 +15,7 @@ runtime view of that configuration, enforces it on hot-path requests, and calls
 - Serve `GET /tracker.js` for the P1 browser tracker asset.
 - Serve `OPTIONS /collect` for browser preflight.
 - Serve `POST /collect` for browser and server event intake.
+- Serve internal `GET /v1/realtime`, `GET /v1/events`, and `GET /v1/properties` readback when query mode is enabled.
 - Resolve write keys to runtime source configuration.
 - Override untrusted client-supplied tenant, project, source, and source type.
 - Enforce source enabled state and origin allowlists before analytics-core sees the event.
@@ -94,14 +95,18 @@ browser-facing collection API or event replay:
 
 - `GET /v1/realtime`
 - `GET /v1/events`
+- `GET /v1/properties`
 
 These routes require an internal bearer token and use `X-SimpleTrack-Write-Key`
 or `write_key` to resolve the source boundary before calling
-`analytics-core/storage.EventReader`. Production dashboard readback should stay
+`analytics-core` storage contracts. Realtime and Events use
+`storage.EventReader`; property metadata uses `storage.PropertyCatalogReader`
+when a MySQL DSN is configured. Production dashboard readback should stay
 server-side in `simpletrack-saas` so the internal bearer token never reaches the
-browser. `OPTIONS /v1/realtime` and `OPTIONS /v1/events` exist for protocol
-completeness and trusted service/browser-shell integrations, but the actual GET
-request still requires the bearer token and source allowlist check.
+browser. `OPTIONS /v1/realtime`, `OPTIONS /v1/events`, and
+`OPTIONS /v1/properties` exist for protocol completeness and trusted
+service/browser-shell integrations, but the actual GET request still requires
+the bearer token and source allowlist check.
 
 ```powershell
 $env:ANALYTICS_SERVICE_QUERY_ENABLED='true'
@@ -115,6 +120,16 @@ Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/realtime?write_key=
   -Headers @{ Authorization = "Bearer query-service-token" }
 
 Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/events?write_key=wk_local&from=2026-05-03T00:00:00Z&to=2026-05-04T00:00:00Z' `
+  -Headers @{ Authorization = "Bearer query-service-token" }
+```
+
+To read the source-scoped property catalog used for future UI filter
+suggestions, provide the MySQL DSN as well. When auto migration is disabled,
+`property_catalog` must already exist:
+
+```powershell
+$env:ANALYTICS_SERVICE_MYSQL_DSN='analytics_core:analytics_core@tcp(127.0.0.1:23306)/analytics_core?parseTime=true'
+Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/properties?write_key=wk_local&scope=event&limit=100' `
   -Headers @{ Authorization = "Bearer query-service-token" }
 ```
 

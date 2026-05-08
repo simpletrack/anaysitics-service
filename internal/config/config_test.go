@@ -129,6 +129,9 @@ func TestLoadFromEnvAcceptsQueryModeConfig(t *testing.T) {
 	if cfg.QueryToken != "query-token" {
 		t.Fatalf("unexpected query token %q", cfg.QueryToken)
 	}
+	if cfg.PropertiesPath != "/v1/properties" {
+		t.Fatalf("unexpected properties path %q", cfg.PropertiesPath)
+	}
 	if !slices.Equal(cfg.QueryTokens, []string{"query-token"}) {
 		t.Fatalf("unexpected accepted query tokens %#v", cfg.QueryTokens)
 	}

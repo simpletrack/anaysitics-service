@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	defaultRealtimeWindow    = 30 * time.Minute
-	defaultRealtimeQueryCap  = 50
-	defaultEventsQueryCap    = 100
-	defaultPropertyFilterCap = 5
+	defaultRealtimeWindow       = 30 * time.Minute
+	defaultRealtimeQueryCap     = 50
+	defaultEventsQueryCap       = 100
+	defaultPropertyFilterCap    = 5
+	defaultPropertyCatalogLimit = 100
+	maxPropertyCatalogLimit     = 200
 )
 
 type querySourceResponse struct {
@@ -62,6 +64,20 @@ type queryRealtimeResponse struct {
 	Since         string                 `json:"since"`                    // Since is the inclusive recent-event lower bound
 	Limit         int                    `json:"limit"`                    // Limit is the effective caller-requested page size before core caps
 	QueryEvidence *queryEvidenceResponse `json:"query_evidence,omitempty"` // QueryEvidence explains the read-side path chosen by analytics-core
+}
+
+type propertyCatalogResponse struct {
+	Source querySourceResponse           `json:"source"` // Source reports the trusted runtime source boundary
+	Items  []propertyCatalogItemResponse `json:"items"`  // Items are observed source-scoped property definitions
+	Limit  int                           `json:"limit"`  // Limit is the effective property catalog row cap
+}
+
+type propertyCatalogItemResponse struct {
+	Scope       string `json:"scope"`         // Scope is event or user
+	Name        string `json:"name"`          // Name is the normalized property key
+	ValueType   string `json:"value_type"`    // ValueType is null, string, number, or bool
+	FirstSeenAt string `json:"first_seen_at"` // FirstSeenAt is the earliest observed event timestamp
+	LastSeenAt  string `json:"last_seen_at"`  // LastSeenAt is the latest observed event timestamp
 }
 
 type queryEvidenceResponse struct {
@@ -218,6 +234,54 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 		From:          from.UTC().Format(time.RFC3339Nano),
 		To:            to.UTC().Format(time.RFC3339Nano),
 		QueryEvidence: evidence,
+	})
+}
+
+func (h *Handler) handleProperties(ctx fiber.Ctx) error {
+	// The property catalog route is read-only metadata. It is available only
+	// when the runtime assembled a catalog reader, usually from MySQL.
+	if h.opts.PropertyCatalog == nil {
+		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
+	}
+	decision, ok := h.requireQueryToken(ctx)
+	if !ok {
+		return nil
+	}
+
+	// Reuse the same write-key and origin boundary as Events/Realtime so callers
+	// cannot enumerate property selectors outside their source.
+	source, ok := h.resolveQuerySource(ctx, decision)
+	if !ok {
+		return nil
+	}
+
+	scope, err := parsePropertyCatalogScope(ctx)
+	if err != nil {
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	}
+	limit, err := parsePropertyCatalogLimit(ctx)
+	if err != nil {
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	}
+
+	// Delegate source-scoped metadata reads to analytics-core storage contracts.
+	// The HTTP layer only maps query parameters and response shape.
+	entries, err := h.opts.PropertyCatalog.ListPropertyCatalogEntries(ctx.Context(), storage.PropertyCatalogQuery{
+		TenantID:  source.TenantID,
+		ProjectID: source.ProjectID,
+		SourceID:  source.SourceID,
+		Scope:     scope,
+		Limit:     limit,
+	})
+	if err != nil {
+		log.Printf("property catalog query failed: %v", err)
+		return h.writeJSON(ctx, fiber.StatusInternalServerError, ErrorResponse{Error: "internal server error"})
+	}
+
+	return h.writeJSON(ctx, fiber.StatusOK, propertyCatalogResponse{
+		Source: toQuerySourceResponse(source),
+		Items:  toPropertyCatalogItemResponses(entries),
+		Limit:  limit,
 	})
 }
 
@@ -425,6 +489,28 @@ func parsePropertyFilters(ctx fiber.Ctx, source controlplane.SourceConfig) ([]st
 	return filters, nil
 }
 
+func parsePropertyCatalogScope(ctx fiber.Ctx) (storage.PropertyScope, error) {
+	value := strings.ToLower(strings.TrimSpace(ctx.Query("scope")))
+	if value == "" {
+		return "", nil
+	}
+	if value != string(storage.PropertyScopeEvent) && value != string(storage.PropertyScopeUser) {
+		return "", errors.New("scope must be event or user")
+	}
+	return storage.PropertyScope(value), nil
+}
+
+func parsePropertyCatalogLimit(ctx fiber.Ctx) (int, error) {
+	limit, err := parseQueryLimitOrDefault(ctx, "limit", defaultPropertyCatalogLimit)
+	if err != nil {
+		return 0, err
+	}
+	if limit > maxPropertyCatalogLimit {
+		return 0, fmt.Errorf("limit must be less than or equal to %d", maxPropertyCatalogLimit)
+	}
+	return limit, nil
+}
+
 func propertyFilterArgs(ctx fiber.Ctx) [][]byte {
 	filters := make([][]byte, 0, 2)
 	ctx.Request().URI().QueryArgs().VisitAll(func(key []byte, value []byte) {
@@ -536,6 +622,20 @@ func toPropertySelectors(filters []controlplane.AllowedPropertyFilter) []storage
 		selectors = append(selectors, selector)
 	}
 	return selectors
+}
+
+func toPropertyCatalogItemResponses(entries []storage.PropertyCatalogEntry) []propertyCatalogItemResponse {
+	responses := make([]propertyCatalogItemResponse, 0, len(entries))
+	for _, entry := range entries {
+		responses = append(responses, propertyCatalogItemResponse{
+			Scope:       string(entry.Scope),
+			Name:        entry.Name,
+			ValueType:   string(entry.ValueType),
+			FirstSeenAt: entry.FirstSeenAt.UTC().Format(time.RFC3339Nano),
+			LastSeenAt:  entry.LastSeenAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return responses
 }
 
 func toQuerySourceResponse(source controlplane.SourceConfig) querySourceResponse {

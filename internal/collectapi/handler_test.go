@@ -481,6 +481,74 @@ func TestRealtimeQueryRejectsDeletedSourceAfterHTTPRevalidation(t *testing.T) {
 	}
 }
 
+func TestPropertyCatalogQueryReturnsSourceScopedEntries(t *testing.T) {
+	seenAt := time.Date(2026, 5, 3, 9, 0, 0, 0, time.UTC)
+	catalog := &recordingPropertyCatalog{
+		entries: []storage.PropertyCatalogEntry{
+			{
+				TenantID:    "tenant_control",
+				ProjectID:   "project_control",
+				SourceID:    "source_control",
+				Scope:       storage.PropertyScopeEvent,
+				Name:        "button",
+				ValueType:   storage.PropertyValueString,
+				FirstSeenAt: seenAt,
+				LastSeenAt:  seenAt.Add(time.Hour),
+			},
+		},
+	}
+	handler := newTestPropertyCatalogHandler(t, testSourceConfig(), catalog)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/properties?write_key=wk_live&scope=event&limit=25", "", map[string]string{
+		"Authorization": "Bearer query-token",
+		"Origin":        "https://docs.example.com",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected property catalog response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if catalog.query.TenantID != "tenant_control" || catalog.query.ProjectID != "project_control" || catalog.query.SourceID != "source_control" {
+		t.Fatalf("expected source-scoped catalog query, got %#v", catalog.query)
+	}
+	if catalog.query.Scope != storage.PropertyScopeEvent || catalog.query.Limit != 25 {
+		t.Fatalf("expected catalog scope/limit from query, got %#v", catalog.query)
+	}
+
+	var response propertyCatalogResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode property catalog response failed: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one property catalog item, got %d", len(response.Items))
+	}
+	if response.Items[0].Scope != "event" || response.Items[0].Name != "button" || response.Items[0].ValueType != "string" {
+		t.Fatalf("property catalog item mismatch: %#v", response.Items[0])
+	}
+	if response.Limit != 25 {
+		t.Fatalf("expected response limit 25, got %d", response.Limit)
+	}
+}
+
+func TestPropertyCatalogQueryRejectsInvalidScopeAndLimit(t *testing.T) {
+	handler := newTestPropertyCatalogHandler(t, testSourceConfig(), &recordingPropertyCatalog{})
+
+	badScope := serve(handler, fiber.MethodGet, "/v1/properties?write_key=wk_live&scope=account", "", map[string]string{
+		"Authorization": "Bearer query-token",
+		"Origin":        "https://docs.example.com",
+	})
+	if badScope.Response.StatusCode() != fiber.StatusBadRequest {
+		t.Fatalf("expected invalid scope rejection, got %d: %s", badScope.Response.StatusCode(), badScope.Response.Body())
+	}
+
+	tooLarge := serve(handler, fiber.MethodGet, "/v1/properties?write_key=wk_live&limit=201", "", map[string]string{
+		"Authorization": "Bearer query-token",
+		"Origin":        "https://docs.example.com",
+	})
+	if tooLarge.Response.StatusCode() != fiber.StatusBadRequest {
+		t.Fatalf("expected too-large limit rejection, got %d: %s", tooLarge.Response.StatusCode(), tooLarge.Response.Body())
+	}
+}
+
 func TestEventsQueryReturnsRecords(t *testing.T) {
 	eventTime := time.Date(2026, 5, 3, 9, 20, 0, 0, time.UTC)
 	reader := &recordingQueryReader{
@@ -1231,6 +1299,30 @@ func newTestQueryHandlerWithResolverAndCredentials(t *testing.T, resolver contro
 	return app
 }
 
+func newTestPropertyCatalogHandler(t *testing.T, source controlplane.SourceConfig, catalog storage.PropertyCatalogReader) *fiber.App {
+	t.Helper()
+
+	resolver, err := controlplane.NewMemoryResolver([]controlplane.SourceConfig{source})
+	if err != nil {
+		t.Fatalf("new memory resolver failed: %v", err)
+	}
+	app, err := NewApp(Options{
+		CollectPath:     "/collect",
+		HealthPath:      "/healthz",
+		TrackerPath:     "/tracker.js",
+		PropertiesPath:  "/v1/properties",
+		TrackerScript:   []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Resolver:        resolver,
+		Bus:             &recordingBus{},
+		PropertyCatalog: catalog,
+		QueryToken:      "query-token",
+	})
+	if err != nil {
+		t.Fatalf("new app failed: %v", err)
+	}
+	return app
+}
+
 func serve(app *fiber.App, method string, path string, body string, headers map[string]string) *testCtx {
 	request, err := http.NewRequest(method, path, strings.NewReader(body))
 	if err != nil {
@@ -1404,6 +1496,12 @@ type recordingQueryReader struct {
 	err              error
 }
 
+type recordingPropertyCatalog struct {
+	query   storage.PropertyCatalogQuery   // query records the last source-scoped catalog query
+	entries []storage.PropertyCatalogEntry // entries are returned to the handler
+	err     error                          // err forces catalog reads to fail
+}
+
 type countingResolver struct {
 	source controlplane.SourceConfig
 	calls  int
@@ -1412,6 +1510,14 @@ type countingResolver struct {
 func (r *countingResolver) ResolveSource(_ context.Context, _ string) (controlplane.SourceConfig, error) {
 	r.calls++
 	return r.source, nil
+}
+
+func (c *recordingPropertyCatalog) ListPropertyCatalogEntries(_ context.Context, query storage.PropertyCatalogQuery) ([]storage.PropertyCatalogEntry, error) {
+	c.query = query
+	if c.err != nil {
+		return nil, c.err
+	}
+	return append([]storage.PropertyCatalogEntry(nil), c.entries...), nil
 }
 
 func (r *recordingQueryReader) ListEvents(_ context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {

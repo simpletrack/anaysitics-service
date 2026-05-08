@@ -14,6 +14,7 @@ import (
 	"github.com/simpletrack/analytics-core/ingestion"
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-core/storage/clickhouse"
+	"github.com/simpletrack/analytics-core/storage/mysql"
 	"github.com/simpletrack/analytics-service/internal/collectapi"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
@@ -75,6 +76,16 @@ func New(cfg config.Config) (*Runtime, error) {
 	}
 	closers = append(closers, queryClosers...)
 
+	// Build the optional property catalog reader from MySQL. This powers
+	// source-scoped filter suggestions without exposing MySQL row models to the
+	// HTTP layer.
+	propertyCatalog, catalogClosers, err := newPropertyCatalogReader(cfg)
+	if err != nil {
+		_ = closeAll(closers)
+		return nil, err
+	}
+	closers = append(closers, catalogClosers...)
+
 	// Wire HTTP to runtime enforcement and analytics-core collect handling. The
 	// app remains unaware of SaaS control-plane CRUD and storage adapters.
 	app, err := collectapi.NewApp(collectapi.Options{
@@ -83,6 +94,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		TrackerPath:           cfg.TrackerPath,
 		EventsPath:            cfg.EventsPath,
 		RealtimePath:          cfg.RealtimePath,
+		PropertiesPath:        cfg.PropertiesPath,
 		SwaggerEnabled:        cfg.SwaggerEnabled,
 		SwaggerPath:           cfg.SwaggerPath,
 		OpenAPIFile:           cfg.OpenAPIFile,
@@ -91,6 +103,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		Resolver:              resolver,
 		Bus:                   bus,
 		QueryReader:           queryReader,
+		PropertyCatalog:       propertyCatalog,
 		QueryToken:            cfg.QueryToken,
 		QueryTokens:           cfg.QueryTokens,
 		QueryCredentials:      toQueryCredentials(cfg.QueryCredentials),
@@ -130,6 +143,38 @@ func newGeoResolver(cfg config.Config) (*geoip.Resolver, io.Closer, error) {
 		return nil, nil, err
 	}
 	return resolver, resolver, nil
+}
+
+func newPropertyCatalogReader(cfg config.Config) (storage.PropertyCatalogReader, []io.Closer, error) {
+	if !cfg.QueryEnabled || cfg.MySQLDSN == "" {
+		return nil, nil, nil
+	}
+
+	// Property catalog readback is metadata, but it still uses the same MySQL
+	// initialization guard as ingestion cataloging. Readback is intentionally
+	// independent of the write-side PropertyCataloging flag so an existing
+	// catalog remains queryable even when this process is not updating it.
+	startupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mysqlDB, mysqlCloser, err := openMySQL(startupCtx, cfg.MySQLDSN)
+	if err != nil {
+		return nil, nil, err
+	}
+	catalog, err := mysql.NewPropertyCatalog(mysqlDB)
+	if err != nil {
+		_ = mysqlCloser.Close()
+		return nil, nil, err
+	}
+	if cfg.MySQLAutoMigrate {
+		if err := catalog.AutoMigrate(startupCtx); err != nil {
+			_ = mysqlCloser.Close()
+			return nil, nil, err
+		}
+	} else if err := requireMySQLTable(mysqlDB.WithContext(startupCtx).Migrator(), &mysql.PropertyCatalogEntry{}, "property_catalog"); err != nil {
+		_ = mysqlCloser.Close()
+		return nil, nil, err
+	}
+	return catalog, []io.Closer{mysqlCloser}, nil
 }
 
 // App returns the Fiber app owned by the runtime.
