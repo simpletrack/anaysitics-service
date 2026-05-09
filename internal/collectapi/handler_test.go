@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -965,6 +966,33 @@ func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
 	}
 	if reader.eventsQuery.SourceID != "" {
 		t.Fatalf("unallowlisted property filter should not reach EventReader, got %#v", reader.eventsQuery)
+	}
+}
+
+func TestEventsQueryMapsInvalidEventQueryErrorsToBadRequest(t *testing.T) {
+	source := testSourceConfig()
+	reader := &recordingQueryReader{
+		err: fmt.Errorf("%w: synthetic reader failure", storage.ErrInvalidEventQuery),
+	}
+	handler := newTestQueryHandler(t, source, reader)
+
+	// The service should preserve core invalid-query errors and map them to a
+	// stable 400 without exposing ClickHouse SQL.
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusBadRequest {
+		t.Fatalf("expected bad request for invalid event query error, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "synthetic reader failure") {
+		t.Fatalf("expected reader failure message in response, got %s", ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected one events reader call, got %d", reader.eventsCalls)
+	}
+	if reader.eventsQuery.From.IsZero() || reader.eventsQuery.To.IsZero() {
+		t.Fatalf("expected time bounds to reach EventReader, got %#v", reader.eventsQuery)
 	}
 }
 
