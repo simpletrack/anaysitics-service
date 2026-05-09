@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/simpletrack/analytics-core/collect"
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 )
@@ -64,6 +65,16 @@ type queryRealtimeResponse struct {
 	Since         string                 `json:"since"`                    // Since is the inclusive recent-event lower bound
 	Limit         int                    `json:"limit"`                    // Limit is the effective caller-requested page size before core caps
 	QueryEvidence *queryEvidenceResponse `json:"query_evidence,omitempty"` // QueryEvidence explains the read-side path chosen by analytics-core
+}
+
+type queryGoalResponse struct {
+	Source         querySourceResponse    `json:"source"`                   // Source reports the trusted runtime source boundary
+	EventName      string                 `json:"event_name"`               // EventName is the goal rule matched against analytics events
+	From           string                 `json:"from"`                     // From is the inclusive event-time lower bound
+	To             string                 `json:"to"`                       // To is the exclusive event-time upper bound
+	MatchingEvents int64                  `json:"matching_events"`          // MatchingEvents is the exact count returned by analytics-core
+	HasData        bool                   `json:"has_data"`                 // HasData reports whether at least one matching event exists
+	QueryEvidence  *queryEvidenceResponse `json:"query_evidence,omitempty"` // QueryEvidence explains the read-side path chosen by analytics-core
 }
 
 type propertyCatalogResponse struct {
@@ -246,6 +257,62 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 	})
 }
 
+func (h *Handler) handleGoals(ctx fiber.Ctx) error {
+	// Goal P1 is an internal readback summary. It is disabled unless the same
+	// trusted query reader used by Events and Realtime is assembled.
+	if h.opts.QueryReader == nil {
+		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
+	}
+	decision, ok := h.requireQueryToken(ctx)
+	if !ok {
+		return nil
+	}
+
+	// Resolve the source from the write key so goal summaries cannot count
+	// across tenant/project/source boundaries.
+	source, ok := h.resolveQuerySource(ctx, decision)
+	if !ok {
+		return nil
+	}
+
+	eventName := strings.TrimSpace(ctx.Query("event_name"))
+	if err := collect.ValidateEventName(eventName); err != nil {
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	}
+	from, err := parseRequiredQueryTime(ctx, "from")
+	if err != nil {
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	}
+	to, err := parseRequiredQueryTime(ctx, "to")
+	if err != nil {
+		return h.writeJSON(ctx, fiber.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	}
+
+	// Count through analytics-core rather than listing rows and counting in the
+	// service. This keeps Goal P1 exact while preserving query-plan evidence.
+	count, evidence, err := h.countEvents(ctx.Context(), storage.EventCountQuery{
+		TenantID:  source.TenantID,
+		ProjectID: source.ProjectID,
+		SourceID:  source.SourceID,
+		EventName: eventName,
+		From:      from,
+		To:        to,
+	})
+	if err != nil {
+		return h.writeQueryError(ctx, err)
+	}
+
+	return h.writeJSON(ctx, fiber.StatusOK, queryGoalResponse{
+		Source:         toQuerySourceResponse(source),
+		EventName:      eventName,
+		From:           from.UTC().Format(time.RFC3339Nano),
+		To:             to.UTC().Format(time.RFC3339Nano),
+		MatchingEvents: count,
+		HasData:        count > 0,
+		QueryEvidence:  evidence,
+	})
+}
+
 func (h *Handler) handleProperties(ctx fiber.Ctx) error {
 	// The property catalog route is read-only metadata. It is available only
 	// when the runtime assembled a catalog reader, usually from MySQL.
@@ -322,6 +389,20 @@ func (h *Handler) listEvents(ctx context.Context, query storage.EventListQuery) 
 	}
 	records, err := h.opts.QueryReader.ListEvents(ctx, query)
 	return records, nil, err
+}
+
+func (h *Handler) countEvents(ctx context.Context, query storage.EventCountQuery) (int64, *queryEvidenceResponse, error) {
+	// Prefer evidence-aware readers so Goal pages can explain whether they are
+	// still on direct fact-table reads or a later optimized path.
+	if reader, ok := h.opts.QueryReader.(storage.EventReaderWithEvidence); ok {
+		result, err := reader.CountEventsWithEvidence(ctx, query)
+		if err != nil {
+			return 0, nil, err
+		}
+		return result.Count, toQueryEvidenceResponse(result.Evidence), nil
+	}
+	count, err := h.opts.QueryReader.CountEvents(ctx, query)
+	return count, nil, err
 }
 
 func eventColumnFilters(ctx fiber.Ctx) []storage.EventFilter {

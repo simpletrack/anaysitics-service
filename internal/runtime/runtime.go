@@ -103,6 +103,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		Resolver:              resolver,
 		Bus:                   bus,
 		QueryReader:           queryReader,
+		GoalsPath:             cfg.GoalsPath,
 		PropertyCatalog:       propertyCatalog,
 		QueryToken:            cfg.QueryToken,
 		QueryTokens:           cfg.QueryTokens,

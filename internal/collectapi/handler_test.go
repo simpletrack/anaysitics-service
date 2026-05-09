@@ -669,6 +669,86 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	}
 }
 
+func TestGoalsQueryReturnsMatchingEventCount(t *testing.T) {
+	reader := &recordingQueryReader{
+		count: 3,
+		countEvidence: storage.EventQueryEvidence{
+			Family:            storage.EventQueryFamilyGoal,
+			ReadPath:          storage.EventReadPathFactEvents,
+			Optimization:      storage.EventQueryOptimizationDirectFactTable,
+			HasTimeLowerBound: true,
+			HasTimeUpperBound: true,
+			TimeWindowSeconds: 3600,
+			ScalarFilterCount: 4,
+		},
+	}
+	handler := newTestQueryHandler(t, testSourceConfig(), reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/goals?write_key=wk_live&event_name=signup_clicked&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected goals response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.countCalls != 1 {
+		t.Fatalf("expected one count query, got %d", reader.countCalls)
+	}
+	if reader.countQuery.TenantID != "tenant_control" ||
+		reader.countQuery.ProjectID != "project_control" ||
+		reader.countQuery.SourceID != "source_control" ||
+		reader.countQuery.EventName != "signup_clicked" {
+		t.Fatalf("expected source-scoped goal query, got %#v", reader.countQuery)
+	}
+	if !reader.countQuery.From.Equal(time.Date(2026, 5, 3, 9, 0, 0, 0, time.UTC)) ||
+		!reader.countQuery.To.Equal(time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("expected one-hour goal query range, got from=%s to=%s", reader.countQuery.From, reader.countQuery.To)
+	}
+
+	var response queryGoalResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode goals response failed: %v", err)
+	}
+	if response.EventName != "signup_clicked" || response.MatchingEvents != 3 || !response.HasData {
+		t.Fatalf("expected matching goal count, got %#v", response)
+	}
+	if response.QueryEvidence == nil || response.QueryEvidence.Family != "goal" || response.QueryEvidence.Pressure != "medium" {
+		t.Fatalf("expected goal query evidence, got %#v", response.QueryEvidence)
+	}
+}
+
+func TestGoalsQueryRequiresEventName(t *testing.T) {
+	reader := &recordingQueryReader{count: 1}
+	handler := newTestQueryHandler(t, testSourceConfig(), reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/goals?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusBadRequest {
+		t.Fatalf("expected missing event_name rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.countCalls != 0 {
+		t.Fatalf("invalid goal request should not query storage, got %d calls", reader.countCalls)
+	}
+}
+
+func TestGoalsQueryRejectsUnsupportedEventName(t *testing.T) {
+	reader := &recordingQueryReader{count: 1}
+	handler := newTestQueryHandler(t, testSourceConfig(), reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/goals?write_key=wk_live&event_name=%2Fsignup&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusBadRequest {
+		t.Fatalf("expected unsupported event_name rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.countCalls != 0 {
+		t.Fatalf("unsupported goal event name should not query storage, got %d calls", reader.countCalls)
+	}
+}
+
 func TestQueryPressureBuckets(t *testing.T) {
 	t.Parallel()
 
@@ -1514,12 +1594,16 @@ func (b *recordingBus) Subscribe(context.Context, eventbus.ConsumerGroup, eventb
 }
 
 type recordingQueryReader struct {
+	countQuery       storage.EventCountQuery
 	eventsQuery      storage.EventListQuery
 	realtimeQuery    storage.RealtimeQuery
+	count            int64
 	events           []storage.EventRecord
 	realtime         []storage.EventRecord
+	countEvidence    storage.EventQueryEvidence
 	eventsEvidence   storage.EventQueryEvidence
 	realtimeEvidence storage.EventQueryEvidence
+	countCalls       int
 	eventsCalls      int
 	realtimeCalls    int
 	err              error
@@ -1583,14 +1667,34 @@ func (r *recordingQueryReader) ListRealtimeWithEvidence(ctx context.Context, que
 	return storage.EventQueryResult{Records: records, Evidence: r.realtimeEvidence}, nil
 }
 
+func (r *recordingQueryReader) CountEvents(_ context.Context, query storage.EventCountQuery) (int64, error) {
+	r.countCalls++
+	r.countQuery = query
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.count, nil
+}
+
+func (r *recordingQueryReader) CountEventsWithEvidence(ctx context.Context, query storage.EventCountQuery) (storage.EventCountResult, error) {
+	count, err := r.CountEvents(ctx, query)
+	if err != nil {
+		return storage.EventCountResult{}, err
+	}
+	return storage.EventCountResult{Count: count, Evidence: r.countEvidence}, nil
+}
+
 type legacyQueryReader struct {
-	eventsQuery   storage.EventListQuery // eventsQuery records the last Events query
-	realtimeQuery storage.RealtimeQuery  // realtimeQuery records the last Realtime query
-	events        []storage.EventRecord  // events are returned from ListEvents
-	realtime      []storage.EventRecord  // realtime rows are returned from ListRealtime
-	eventsCalls   int                    // eventsCalls counts legacy Events reads
-	realtimeCalls int                    // realtimeCalls counts legacy Realtime reads
-	err           error                  // err forces legacy reads to fail
+	countQuery    storage.EventCountQuery // countQuery records the last Goal count query
+	eventsQuery   storage.EventListQuery  // eventsQuery records the last Events query
+	realtimeQuery storage.RealtimeQuery   // realtimeQuery records the last Realtime query
+	count         int64                   // count is returned from CountEvents
+	events        []storage.EventRecord   // events are returned from ListEvents
+	realtime      []storage.EventRecord   // realtime rows are returned from ListRealtime
+	countCalls    int                     // countCalls counts legacy Goal reads
+	eventsCalls   int                     // eventsCalls counts legacy Events reads
+	realtimeCalls int                     // realtimeCalls counts legacy Realtime reads
+	err           error                   // err forces legacy reads to fail
 }
 
 func (r *legacyQueryReader) ListEvents(_ context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {
@@ -1609,6 +1713,15 @@ func (r *legacyQueryReader) ListRealtime(_ context.Context, query storage.Realti
 		return nil, r.err
 	}
 	return append([]storage.EventRecord(nil), r.realtime...), nil
+}
+
+func (r *legacyQueryReader) CountEvents(_ context.Context, query storage.EventCountQuery) (int64, error) {
+	r.countCalls++
+	r.countQuery = query
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.count, nil
 }
 
 type stubCollectGeoResolver struct{}

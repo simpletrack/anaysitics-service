@@ -231,6 +231,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/goals:
+    get:
+      summary: Count events matching one P1 Goal rule for one source and time range.
+      parameters:
+        - $ref: "#/components/parameters/WriteKey"
+        - $ref: "#/components/parameters/QueryAuthorization"
+        - in: query
+          name: event_name
+          required: true
+          schema:
+            type: string
+          description: Event name used by the minimal Goal rule.
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Goal event count summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoalResponse"
+        "400":
+          description: Invalid query parameter, missing event name, or missing write key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing, expired, not-yet-valid, or unknown query token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Origin is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Query API is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/properties:
     get:
       summary: List observed property definitions for one source.
@@ -433,6 +488,30 @@ components:
           format: date-time
         query_evidence:
           $ref: "#/components/schemas/QueryEvidence"
+    GoalResponse:
+      type: object
+      required: [source, event_name, from, to, matching_events, has_data]
+      properties:
+        source:
+          $ref: "#/components/schemas/SourceResponse"
+        event_name:
+          type: string
+          description: Event name used by the minimal Goal rule.
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        matching_events:
+          type: integer
+          format: int64
+          description: Exact event count returned by analytics-core.
+        has_data:
+          type: boolean
+          description: True when at least one matching event exists.
+        query_evidence:
+          $ref: "#/components/schemas/QueryEvidence"
     PropertyCatalogItem:
       type: object
       required: [scope, name, value_type, first_seen_at, last_seen_at]
@@ -482,7 +561,7 @@ components:
       properties:
         family:
           type: string
-          enum: [events, realtime]
+          enum: [events, realtime, goal]
         read_path:
           type: string
           example: fact_events
@@ -494,7 +573,7 @@ components:
           description: Builder-capped row limit used by analytics-core.
         offset:
           type: integer
-          description: Events pagination offset after validation. Realtime reports 0.
+          description: Events pagination offset after validation. Realtime and Goal count reports 0.
         has_time_lower_bound:
           type: boolean
           description: Whether the query constrains the start time.

@@ -26,6 +26,7 @@ type Options struct {
 	HealthPath            string                        // HealthPath is the GET route used by process health checks
 	TrackerPath           string                        // TrackerPath is the GET route used to serve the browser tracker
 	EventsPath            string                        // EventsPath is the GET route used by internal Events readback
+	GoalsPath             string                        // GoalsPath is the GET route used by internal Goal summary readback
 	RealtimePath          string                        // RealtimePath is the GET route used by internal Realtime readback
 	PropertiesPath        string                        // PropertiesPath is the GET route used by internal property catalog reads
 	SwaggerEnabled        bool                          // SwaggerEnabled exposes the generated OpenAPI documentation UI
@@ -99,6 +100,9 @@ func newHandler(opts Options) (*Handler, error) {
 	if opts.EventsPath == "" {
 		opts.EventsPath = "/v1/events"
 	}
+	if opts.GoalsPath == "" {
+		opts.GoalsPath = "/v1/goals"
+	}
 	if opts.RealtimePath == "" {
 		opts.RealtimePath = "/v1/realtime"
 	}
@@ -136,6 +140,7 @@ func validateRoutePaths(opts Options) error {
 		"health path":     opts.HealthPath,
 		"tracker path":    opts.TrackerPath,
 		"events path":     opts.EventsPath,
+		"goals path":      opts.GoalsPath,
 		"realtime path":   opts.RealtimePath,
 		"properties path": opts.PropertiesPath,
 	}
@@ -164,6 +169,7 @@ func (h *Handler) registerRoutes(app *fiber.App) {
 	app.Post(h.opts.CollectPath, h.handleCollect)
 	app.Get(h.opts.RealtimePath, h.handleRealtime)
 	app.Get(h.opts.EventsPath, h.handleEvents)
+	app.Get(h.opts.GoalsPath, h.handleGoals)
 	app.Get(h.opts.PropertiesPath, h.handleProperties)
 	if h.opts.SwaggerEnabled {
 		app.Use(h.opts.SwaggerPath, swaggerui.New(swaggerui.Config{

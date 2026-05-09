@@ -17,6 +17,7 @@ const (
 	defaultHealthPath     = "/healthz"
 	defaultTrackerPath    = "/tracker.js"
 	defaultEventsPath     = "/v1/events"
+	defaultGoalsPath      = "/v1/goals"
 	defaultRealtimePath   = "/v1/realtime"
 	defaultPropertiesPath = "/v1/properties"
 	defaultSwaggerPath    = "/swagger"
@@ -45,6 +46,7 @@ type Config struct {
 	HealthPath                        string                      // HealthPath is the health check route
 	TrackerPath                       string                      // TrackerPath is the browser tracker route
 	EventsPath                        string                      // EventsPath is the internal Events readback route
+	GoalsPath                         string                      // GoalsPath is the internal Goal summary readback route
 	RealtimePath                      string                      // RealtimePath is the internal Realtime readback route
 	PropertiesPath                    string                      // PropertiesPath is the internal property catalog read route
 	SwaggerEnabled                    bool                        // SwaggerEnabled exposes OpenAPI documentation routes
@@ -99,6 +101,7 @@ func LoadFromEnv() (Config, error) {
 		HealthPath:     envString("ANALYTICS_SERVICE_HEALTH_PATH", defaultHealthPath),
 		TrackerPath:    envString("ANALYTICS_SERVICE_TRACKER_PATH", defaultTrackerPath),
 		EventsPath:     envString("ANALYTICS_SERVICE_EVENTS_PATH", defaultEventsPath),
+		GoalsPath:      envString("ANALYTICS_SERVICE_GOALS_PATH", defaultGoalsPath),
 		RealtimePath:   envString("ANALYTICS_SERVICE_REALTIME_PATH", defaultRealtimePath),
 		PropertiesPath: envString("ANALYTICS_SERVICE_PROPERTIES_PATH", defaultPropertiesPath),
 		SwaggerEnabled: envBool("ANALYTICS_SERVICE_SWAGGER_ENABLED", false),
