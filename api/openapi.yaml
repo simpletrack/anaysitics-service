@@ -128,7 +128,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Origin is not allowed.
+          description: Origin is not allowed or source readback policy disables Realtime.
           content:
             application/json:
               schema:
@@ -220,7 +220,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Origin is not allowed.
+          description: Origin is not allowed or source readback policy disables Events.
           content:
             application/json:
               schema:
@@ -275,7 +275,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Origin is not allowed.
+          description: Origin is not allowed or source readback policy disables Goals.
           content:
             application/json:
               schema:
@@ -325,7 +325,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Origin is not allowed.
+          description: Origin is not allowed or source readback policy disables Properties.
           content:
             application/json:
               schema:

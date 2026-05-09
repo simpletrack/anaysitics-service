@@ -1,6 +1,9 @@
 package controlplane
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestMemoryResolverRejectsDuplicateWriteKeys(t *testing.T) {
 	_, err := NewMemoryResolver([]SourceConfig{
@@ -68,6 +71,43 @@ func TestSourceConfigAllowsOnlyConfiguredPropertyFilters(t *testing.T) {
 	if source.AllowsPropertyFilter("event", "unknown", "string") {
 		t.Fatalf("expected unknown property filter to be rejected")
 	}
+}
+
+func TestSourceConfigReadbackPolicyFailsClosed(t *testing.T) {
+	source := SourceConfig{
+		ReadbackPolicy: ReadbackPolicy{
+			Realtime: true,
+			Events:   true,
+		},
+	}
+
+	if !source.AllowsReadback(ReadbackRouteRealtime) {
+		t.Fatalf("expected realtime readback to be allowed")
+	}
+	if !source.AllowsReadback(ReadbackRouteEvents) {
+		t.Fatalf("expected events readback to be allowed")
+	}
+	if source.AllowsReadback(ReadbackRouteProperties) {
+		t.Fatalf("expected missing properties policy to fail closed")
+	}
+	if source.AllowsReadback(ReadbackRouteGoals) {
+		t.Fatalf("expected missing goals policy to fail closed")
+	}
+}
+
+func ExampleSourceConfig_AllowsReadback() {
+	source := SourceConfig{
+		ReadbackPolicy: ReadbackPolicy{
+			Realtime: true,
+		},
+	}
+
+	fmt.Println(source.AllowsReadback(ReadbackRouteRealtime))
+	fmt.Println(source.AllowsReadback(ReadbackRouteEvents))
+
+	// Output:
+	// true
+	// false
 }
 
 func TestMemoryResolverRejectsInvalidPropertyFilterConfig(t *testing.T) {

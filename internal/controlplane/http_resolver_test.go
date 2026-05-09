@@ -39,6 +39,9 @@ func TestHTTPResolverResolvesSourceWithAuth(t *testing.T) {
 	if source.TenantID != "tenant_1" || source.SourceType != "web" {
 		t.Fatalf("unexpected source config: %#v", source)
 	}
+	if !source.AllowsReadback(ReadbackRouteRealtime) || !source.AllowsReadback(ReadbackRouteEvents) {
+		t.Fatalf("expected runtime source readback policy to be preserved: %#v", source.ReadbackPolicy)
+	}
 	if requestCount != 1 {
 		t.Fatalf("expected one control-plane request, got %d", requestCount)
 	}
@@ -360,12 +363,18 @@ func (r *staticResolver) ResolveSource(_ context.Context, _ string) (SourceConfi
 
 func testRuntimeSourceConfig() SourceConfig {
 	return SourceConfig{
-		WriteKey:       "wk_live",
-		Enabled:        true,
-		TenantID:       "tenant_1",
-		ProjectID:      "project_1",
-		SourceID:       "source_web",
-		SourceType:     "web",
+		WriteKey:   "wk_live",
+		Enabled:    true,
+		TenantID:   "tenant_1",
+		ProjectID:  "project_1",
+		SourceID:   "source_web",
+		SourceType: "web",
+		ReadbackPolicy: ReadbackPolicy{
+			Realtime:   true,
+			Events:     true,
+			Properties: true,
+			Goals:      true,
+		},
 		SessionSalt:    "session-salt",
 		VisitSalt:      "visit-salt",
 		ClientHashSalt: "client-salt",

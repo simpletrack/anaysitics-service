@@ -131,6 +131,18 @@ type propertyFilterPayload struct {
 	Value    any    `json:"value"`
 }
 
+func (h *Handler) requireReadbackPolicy(ctx fiber.Ctx, source controlplane.SourceConfig, route controlplane.ReadbackRoute) bool {
+	// Route policy is evaluated after token, write-key, and origin checks so the
+	// service can keep a single source-resolution path while still denying each
+	// read family independently. Missing policy is a control-plane fail-closed
+	// state because SourceConfig.AllowsReadback returns false for zero values.
+	if source.AllowsReadback(route) {
+		return true
+	}
+	_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "readback is disabled"})
+	return false
+}
+
 func (h *Handler) handleRealtime(ctx fiber.Ctx) error {
 	// Reject read routes when query support is not assembled. This keeps the
 	// runtime shape explicit instead of surfacing a half-configured internal API.
@@ -146,6 +158,9 @@ func (h *Handler) handleRealtime(ctx fiber.Ctx) error {
 	// the same write-key boundary as collect.
 	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
+		return nil
+	}
+	if !h.requireReadbackPolicy(ctx, source, controlplane.ReadbackRouteRealtime) {
 		return nil
 	}
 
@@ -197,6 +212,9 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 	// different tenant/project/source than the write-key boundary.
 	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
+		return nil
+	}
+	if !h.requireReadbackPolicy(ctx, source, controlplane.ReadbackRouteEvents) {
 		return nil
 	}
 
@@ -274,6 +292,9 @@ func (h *Handler) handleGoals(ctx fiber.Ctx) error {
 	if !ok {
 		return nil
 	}
+	if !h.requireReadbackPolicy(ctx, source, controlplane.ReadbackRouteGoals) {
+		return nil
+	}
 
 	eventName := strings.TrimSpace(ctx.Query("event_name"))
 	if err := collect.ValidateEventName(eventName); err != nil {
@@ -328,6 +349,9 @@ func (h *Handler) handleProperties(ctx fiber.Ctx) error {
 	// cannot enumerate property selectors outside their source.
 	source, ok := h.resolveQuerySource(ctx, decision)
 	if !ok {
+		return nil
+	}
+	if !h.requireReadbackPolicy(ctx, source, controlplane.ReadbackRouteProperties) {
 		return nil
 	}
 

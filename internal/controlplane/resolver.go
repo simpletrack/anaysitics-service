@@ -31,6 +31,7 @@ type SourceConfig struct {
 	SourceType               string                  `json:"source_type"`                // SourceType is the analytics-core source category, usually web
 	AllowedOrigins           []string                `json:"allowed_origins"`            // AllowedOrigins are browser origins allowed to send events for this source
 	AllowedPropertyFilters   []AllowedPropertyFilter `json:"allowed_property_filters"`   // AllowedPropertyFilters are source-scoped typed property query selectors
+	ReadbackPolicy           ReadbackPolicy          `json:"readback_policy"`            // ReadbackPolicy gates internal readback route families for this source
 	BotUserAgents            []string                `json:"bot_user_agents"`            // BotUserAgents override analytics-core default bot user-agent tokens
 	InternalCIDRs            []string                `json:"internal_cidrs"`             // InternalCIDRs are runtime network ranges filtered before publishing
 	InternalIPs              []string                `json:"internal_ips"`               // InternalIPs are exact runtime client addresses filtered before publishing
@@ -40,6 +41,31 @@ type SourceConfig struct {
 	VisitWindowSeconds       int                     `json:"visit_window_seconds"`       // VisitWindowSeconds encodes VisitWindow for JSON runtime configs
 	ClientHashSalt           string                  `json:"client_hash_salt"`           // ClientHashSalt namespaces derived client IP hashes
 	IncludeClientFingerprint bool                    `json:"include_client_fingerprint"` // IncludeClientFingerprint adds transient client data to derived sessions
+}
+
+// ReadbackRoute identifies one internal analytics readback route family.
+type ReadbackRoute string
+
+const (
+	// ReadbackRouteRealtime gates recent-event readback used by Realtime views.
+	ReadbackRouteRealtime ReadbackRoute = "realtime"
+	// ReadbackRouteEvents gates historical event-list readback used by Events views.
+	ReadbackRouteEvents ReadbackRoute = "events"
+	// ReadbackRouteProperties gates property-catalog readback used by filter builders.
+	ReadbackRouteProperties ReadbackRoute = "properties"
+	// ReadbackRouteGoals gates P1 goal-count readback used by goal status cards.
+	ReadbackRouteGoals ReadbackRoute = "goals"
+)
+
+// ReadbackPolicy describes which internal readback families a source may use.
+//
+// The zero value denies every route. This is intentional: missing control-plane
+// policy must fail closed instead of silently exposing analytics reads.
+type ReadbackPolicy struct {
+	Realtime   bool `json:"realtime"`   // Realtime allows /v1/realtime readback for this source
+	Events     bool `json:"events"`     // Events allows /v1/events readback for this source
+	Properties bool `json:"properties"` // Properties allows /v1/properties metadata readback for this source
+	Goals      bool `json:"goals"`      // Goals allows /v1/goals summary readback for this source
 }
 
 // AllowedPropertyFilter describes one source-scoped property selector allowed in Events readback.
@@ -114,6 +140,24 @@ func (c SourceConfig) AllowsPropertyFilter(scope string, name string, valueType 
 		}
 	}
 	return false
+}
+
+// AllowsReadback reports whether source policy permits one internal read route.
+func (c SourceConfig) AllowsReadback(route ReadbackRoute) bool {
+	// Keep route gating centralized in the control-plane model. HTTP handlers
+	// should not infer defaults or duplicate policy switches per endpoint.
+	switch route {
+	case ReadbackRouteRealtime:
+		return c.ReadbackPolicy.Realtime
+	case ReadbackRouteEvents:
+		return c.ReadbackPolicy.Events
+	case ReadbackRouteProperties:
+		return c.ReadbackPolicy.Properties
+	case ReadbackRouteGoals:
+		return c.ReadbackPolicy.Goals
+	default:
+		return false
+	}
 }
 
 // Resolver resolves runtime source configuration from a write key.

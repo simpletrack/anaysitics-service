@@ -968,6 +968,145 @@ func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
 	}
 }
 
+func TestQueryRoutesEnforceSourceReadbackPolicy(t *testing.T) {
+	cases := []struct {
+		name          string
+		path          string
+		route         controlplane.ReadbackRoute
+		buildHandler  func(*testing.T, controlplane.SourceConfig, *recordingQueryReader, *recordingPropertyCatalog) *fiber.App
+		assertNotRead func(*testing.T, *recordingQueryReader, *recordingPropertyCatalog)
+		assertWasRead func(*testing.T, *recordingQueryReader, *recordingPropertyCatalog)
+	}{
+		{
+			name:  "realtime",
+			path:  "/v1/realtime?write_key=wk_live",
+			route: controlplane.ReadbackRouteRealtime,
+			buildHandler: func(t *testing.T, source controlplane.SourceConfig, reader *recordingQueryReader, _ *recordingPropertyCatalog) *fiber.App {
+				return newTestQueryHandler(t, source, reader)
+			},
+			assertNotRead: func(t *testing.T, reader *recordingQueryReader, _ *recordingPropertyCatalog) {
+				t.Helper()
+				if reader.realtimeCalls != 0 {
+					t.Fatalf("disabled realtime policy should not reach EventReader, got %d calls", reader.realtimeCalls)
+				}
+			},
+			assertWasRead: func(t *testing.T, reader *recordingQueryReader, _ *recordingPropertyCatalog) {
+				t.Helper()
+				if reader.realtimeCalls != 1 {
+					t.Fatalf("allowed realtime policy should reach EventReader once, got %d calls", reader.realtimeCalls)
+				}
+			},
+		},
+		{
+			name:  "events",
+			path:  "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z",
+			route: controlplane.ReadbackRouteEvents,
+			buildHandler: func(t *testing.T, source controlplane.SourceConfig, reader *recordingQueryReader, _ *recordingPropertyCatalog) *fiber.App {
+				return newTestQueryHandler(t, source, reader)
+			},
+			assertNotRead: func(t *testing.T, reader *recordingQueryReader, _ *recordingPropertyCatalog) {
+				t.Helper()
+				if reader.eventsCalls != 0 {
+					t.Fatalf("disabled events policy should not reach EventReader, got %d calls", reader.eventsCalls)
+				}
+			},
+			assertWasRead: func(t *testing.T, reader *recordingQueryReader, _ *recordingPropertyCatalog) {
+				t.Helper()
+				if reader.eventsCalls != 1 {
+					t.Fatalf("allowed events policy should reach EventReader once, got %d calls", reader.eventsCalls)
+				}
+			},
+		},
+		{
+			name:  "goals",
+			path:  "/v1/goals?write_key=wk_live&event_name=signup&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z",
+			route: controlplane.ReadbackRouteGoals,
+			buildHandler: func(t *testing.T, source controlplane.SourceConfig, reader *recordingQueryReader, _ *recordingPropertyCatalog) *fiber.App {
+				return newTestQueryHandler(t, source, reader)
+			},
+			assertNotRead: func(t *testing.T, reader *recordingQueryReader, _ *recordingPropertyCatalog) {
+				t.Helper()
+				if reader.countCalls != 0 {
+					t.Fatalf("disabled goals policy should not reach EventReader, got %d calls", reader.countCalls)
+				}
+			},
+			assertWasRead: func(t *testing.T, reader *recordingQueryReader, _ *recordingPropertyCatalog) {
+				t.Helper()
+				if reader.countCalls != 1 {
+					t.Fatalf("allowed goals policy should reach EventReader once, got %d calls", reader.countCalls)
+				}
+			},
+		},
+		{
+			name:  "properties",
+			path:  "/v1/properties?write_key=wk_live&scope=event",
+			route: controlplane.ReadbackRouteProperties,
+			buildHandler: func(t *testing.T, source controlplane.SourceConfig, _ *recordingQueryReader, catalog *recordingPropertyCatalog) *fiber.App {
+				return newTestPropertyCatalogHandler(t, source, catalog)
+			},
+			assertNotRead: func(t *testing.T, _ *recordingQueryReader, catalog *recordingPropertyCatalog) {
+				t.Helper()
+				if catalog.query.SourceID != "" {
+					t.Fatalf("disabled properties policy should not reach catalog reader, got %#v", catalog.query)
+				}
+			},
+			assertWasRead: func(t *testing.T, _ *recordingQueryReader, catalog *recordingPropertyCatalog) {
+				t.Helper()
+				if catalog.query.SourceID != "source_control" {
+					t.Fatalf("allowed properties policy should reach catalog reader, got %#v", catalog.query)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name+"/disabled", func(t *testing.T) {
+			source := testSourceConfig()
+			switch tc.route {
+			case controlplane.ReadbackRouteRealtime:
+				source.ReadbackPolicy.Realtime = false
+			case controlplane.ReadbackRouteEvents:
+				source.ReadbackPolicy.Events = false
+			case controlplane.ReadbackRouteProperties:
+				source.ReadbackPolicy.Properties = false
+			case controlplane.ReadbackRouteGoals:
+				source.ReadbackPolicy.Goals = false
+			}
+			reader := &recordingQueryReader{}
+			catalog := &recordingPropertyCatalog{}
+			handler := tc.buildHandler(t, source, reader, catalog)
+
+			ctx := serve(handler, fiber.MethodGet, tc.path, "", map[string]string{
+				"Authorization": "Bearer query-token",
+			})
+
+			if ctx.Response.StatusCode() != fiber.StatusForbidden {
+				t.Fatalf("expected disabled readback policy response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if string(ctx.Response.Body()) != `{"error":"readback is disabled"}` {
+				t.Fatalf("expected stable readback-policy error, got %s", ctx.Response.Body())
+			}
+			tc.assertNotRead(t, reader, catalog)
+		})
+
+		t.Run(tc.name+"/allowed", func(t *testing.T) {
+			reader := &recordingQueryReader{}
+			catalog := &recordingPropertyCatalog{}
+			handler := tc.buildHandler(t, testSourceConfig(), reader, catalog)
+
+			ctx := serve(handler, fiber.MethodGet, tc.path, "", map[string]string{
+				"Authorization": "Bearer query-token",
+			})
+
+			if ctx.Response.StatusCode() != fiber.StatusOK {
+				t.Fatalf("expected allowed readback policy response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			tc.assertWasRead(t, reader, catalog)
+		})
+	}
+}
+
 func TestQueryRoutesRequireBearerToken(t *testing.T) {
 	resolver := &countingResolver{source: testSourceConfig()}
 	handler := newTestQueryHandlerWithResolver(t, resolver, &recordingQueryReader{})
@@ -1544,13 +1683,19 @@ func validCollectBody(writeKey string) string {
 
 func testSourceConfig() controlplane.SourceConfig {
 	return controlplane.SourceConfig{
-		WriteKey:                 "wk_live",
-		Enabled:                  true,
-		TenantID:                 "tenant_control",
-		ProjectID:                "project_control",
-		SourceID:                 "source_control",
-		SourceType:               "web",
-		AllowedOrigins:           []string{"https://docs.example.com"},
+		WriteKey:       "wk_live",
+		Enabled:        true,
+		TenantID:       "tenant_control",
+		ProjectID:      "project_control",
+		SourceID:       "source_control",
+		SourceType:     "web",
+		AllowedOrigins: []string{"https://docs.example.com"},
+		ReadbackPolicy: controlplane.ReadbackPolicy{
+			Realtime:   true,
+			Events:     true,
+			Properties: true,
+			Goals:      true,
+		},
 		SessionSalt:              "session-salt",
 		VisitSalt:                "visit-salt",
 		ClientHashSalt:           "client-salt",
