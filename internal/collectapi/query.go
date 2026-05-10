@@ -121,13 +121,6 @@ const (
 	pressureLow    = "low"
 	pressureMedium = "medium"
 	pressureHigh   = "high"
-
-	// wideBoundedEventsPressureWindow marks the first bounded Events window that
-	// should be treated as a pressure candidate even without typed property
-	// predicates. Recent-window scalar Events remain medium, while multi-day
-	// bounded scans move into the high bucket for follow-up. This threshold is a
-	// service-owned triage heuristic, not a planner-derived analytics-core fact.
-	wideBoundedEventsPressureWindow = int64((24 * time.Hour) / time.Second)
 )
 
 type propertyFilterPayload struct {
@@ -827,17 +820,10 @@ func toPropertyFilterEvidenceResponses(filters []storage.EventPropertyFilterEvid
 //
 // The bucket is intentionally simple: it helps operators compare query shapes
 // and decide whether a request deserves follow-up optimization work, but it is
-// not a hard latency SLA or an automatic scaling trigger. The wide bounded
-// Events threshold below is likewise a service-side policy heuristic.
+// not a hard latency SLA or an automatic scaling trigger.
 func queryPressure(evidence storage.EventQueryEvidence) string {
 	totalFilters := evidence.ScalarFilterCount + evidence.PropertyFilterCount
 	switch {
-	case evidence.Family == storage.EventQueryFamilyEvents &&
-		evidence.PropertyFilterCount == 0 &&
-		evidence.HasTimeLowerBound &&
-		evidence.HasTimeUpperBound &&
-		evidence.TimeWindowSeconds >= wideBoundedEventsPressureWindow:
-		return pressureHigh
 	case evidence.PropertyFilterCount == 0 && evidence.ScalarFilterCount <= 2:
 		return pressureLow
 	case evidence.PropertyFilterCount <= 2 && totalFilters <= 6:

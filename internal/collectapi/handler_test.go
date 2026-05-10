@@ -773,35 +773,35 @@ func TestQueryPressureBuckets(t *testing.T) {
 				Family:              storage.EventQueryFamilyEvents,
 				HasTimeLowerBound:   true,
 				HasTimeUpperBound:   true,
-				TimeWindowSeconds:   wideBoundedEventsPressureWindow - int64((time.Hour)/time.Second),
+				TimeWindowSeconds:   int64((23 * time.Hour) / time.Second),
 				ScalarFilterCount:   4,
 				PropertyFilterCount: 0,
 			},
 			want: "medium",
 		},
 		{
-			name: "high exact wide scalar boundary",
+			name: "low exact 24h bounded scalar boundary",
 			evidence: storage.EventQueryEvidence{
 				Family:              storage.EventQueryFamilyEvents,
 				HasTimeLowerBound:   true,
 				HasTimeUpperBound:   true,
-				TimeWindowSeconds:   wideBoundedEventsPressureWindow,
+				TimeWindowSeconds:   int64((24 * time.Hour) / time.Second),
 				ScalarFilterCount:   2,
 				PropertyFilterCount: 0,
 			},
-			want: "high",
+			want: "low",
 		},
 		{
-			name: "high wide scalar events",
+			name: "medium multi-day bounded scalar events",
 			evidence: storage.EventQueryEvidence{
 				Family:              storage.EventQueryFamilyEvents,
 				HasTimeLowerBound:   true,
 				HasTimeUpperBound:   true,
-				TimeWindowSeconds:   wideBoundedEventsPressureWindow + int64((time.Hour)/time.Second),
+				TimeWindowSeconds:   int64((72 * time.Hour) / time.Second),
 				ScalarFilterCount:   4,
 				PropertyFilterCount: 0,
 			},
-			want: "high",
+			want: "medium",
 		},
 		{
 			name: "high",
@@ -1035,7 +1035,7 @@ func TestEventsQueryPreservesCorePropertyFilterWindowGuardrail(t *testing.T) {
 	}
 }
 
-func TestEventsQueryMarksWideScalarWindowsHighPressure(t *testing.T) {
+func TestEventsQueryKeepsWideScalarWindowsMediumPressure(t *testing.T) {
 	source := testSourceConfig()
 	reader := newCorePlanningQueryReader(t, source)
 	handler := newTestQueryHandler(t, source, reader)
@@ -1060,15 +1060,15 @@ func TestEventsQueryMarksWideScalarWindowsHighPressure(t *testing.T) {
 	if response.QueryEvidence == nil {
 		t.Fatal("expected query evidence from core planning boundary")
 	}
-	if response.QueryEvidence.Pressure != pressureHigh {
-		t.Fatalf("expected high pressure for wide scalar Events, got %#v", response.QueryEvidence)
+	if response.QueryEvidence.Pressure != pressureMedium {
+		t.Fatalf("expected medium pressure for wide scalar Events, got %#v", response.QueryEvidence)
 	}
 	if response.QueryEvidence.UsesPropertyTable || response.QueryEvidence.PropertyFilterCount != 0 {
 		t.Fatalf("expected scalar query evidence without property table, got %#v", response.QueryEvidence)
 	}
 }
 
-func TestEventsQueryMarksBoundedWindowOnlyEventsHighPressureAtExactBoundary(t *testing.T) {
+func TestEventsQueryKeepsBoundedWindowOnlyEventsLowPressureAtExactBoundary(t *testing.T) {
 	source := testSourceConfig()
 	reader := newCorePlanningQueryReader(t, source)
 	handler := newTestQueryHandler(t, source, reader)
@@ -1090,11 +1090,11 @@ func TestEventsQueryMarksBoundedWindowOnlyEventsHighPressureAtExactBoundary(t *t
 	if response.QueryEvidence == nil {
 		t.Fatal("expected query evidence from core planning boundary")
 	}
-	if response.QueryEvidence.Pressure != pressureHigh {
-		t.Fatalf("expected high pressure at the exact bounded-window threshold, got %#v", response.QueryEvidence)
+	if response.QueryEvidence.Pressure != pressureLow {
+		t.Fatalf("expected low pressure at the exact bounded-window threshold, got %#v", response.QueryEvidence)
 	}
-	if response.QueryEvidence.TimeWindowSeconds != wideBoundedEventsPressureWindow {
-		t.Fatalf("expected exact threshold window evidence %d, got %#v", wideBoundedEventsPressureWindow, response.QueryEvidence)
+	if response.QueryEvidence.TimeWindowSeconds != int64((24*time.Hour)/time.Second) {
+		t.Fatalf("expected exact 24h window evidence, got %#v", response.QueryEvidence)
 	}
 }
 
