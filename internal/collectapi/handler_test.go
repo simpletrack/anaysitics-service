@@ -22,6 +22,7 @@ import (
 	"github.com/simpletrack/analytics-core/contracts"
 	"github.com/simpletrack/analytics-core/eventbus"
 	"github.com/simpletrack/analytics-core/storage"
+	"github.com/simpletrack/analytics-core/storage/clickhouse"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
 )
 
@@ -969,6 +970,67 @@ func TestEventsQueryRejectsUnallowlistedPropertyFilters(t *testing.T) {
 	}
 }
 
+func TestEventsQueryPreservesCorePropertyFilterWindowGuardrail(t *testing.T) {
+	source := testSourceConfig()
+	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+	}
+	reader := newCorePlanningQueryReader(t, source)
+	handler := newTestQueryHandler(t, source, reader)
+	propertyFilter := url.QueryEscape(`{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}`)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-10T09:00:00Z&property_filter="+propertyFilter, "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected seven-day property-filter window to pass, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected one core planning call, got %d", reader.eventsCalls)
+	}
+	if len(reader.eventsQuery.PropertyFilters) != 1 {
+		t.Fatalf("expected property filter to reach core planning boundary, got %#v", reader.eventsQuery.PropertyFilters)
+	}
+	var response queryEventsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode events response failed: %v", err)
+	}
+	if response.QueryEvidence == nil {
+		t.Fatal("expected query evidence from core planning boundary")
+	}
+	if response.QueryEvidence.TimeWindowSeconds != int64((7*24*time.Hour)/time.Second) {
+		t.Fatalf("expected seven-day time window evidence, got %#v", response.QueryEvidence)
+	}
+	if !response.QueryEvidence.UsesPropertyTable || response.QueryEvidence.PropertyFilterCount != 1 {
+		t.Fatalf("expected property-table evidence, got %#v", response.QueryEvidence)
+	}
+}
+
+func TestEventsQueryRejectsPropertyFilterWindowsBeyondCoreGuardrail(t *testing.T) {
+	source := testSourceConfig()
+	source.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{
+		{Scope: "event", Name: "button", ValueTypes: []string{"string"}},
+	}
+	reader := newCorePlanningQueryReader(t, source)
+	handler := newTestQueryHandler(t, source, reader)
+	propertyFilter := url.QueryEscape(`{"scope":"event","name":"button","type":"string","op":"eq","value":"hero"}`)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-11T09:00:00Z&property_filter="+propertyFilter, "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusBadRequest {
+		t.Fatalf("expected bad request for property-filter window beyond core guardrail, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected one core planning call before rejection, got %d", reader.eventsCalls)
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "property-filter time window 192h0m0s exceeds max 168h0m0s") {
+		t.Fatalf("expected core guardrail error in response, got %s", ctx.Response.Body())
+	}
+}
+
 func TestEventsQueryMapsInvalidEventQueryErrorsToBadRequest(t *testing.T) {
 	source := testSourceConfig()
 	reader := &recordingQueryReader{
@@ -1782,6 +1844,12 @@ type recordingQueryReader struct {
 	err              error
 }
 
+type corePlanningQueryReader struct {
+	builder     *clickhouse.EventQueryBuilder // builder is the real core planner used to enforce read-side guardrails
+	eventsQuery storage.EventListQuery        // eventsQuery records the service-mapped query passed into analytics-core
+	eventsCalls int                           // eventsCalls counts Events planning attempts across success and rejection paths
+}
+
 type recordingPropertyCatalog struct {
 	query   storage.PropertyCatalogQuery   // query records the last source-scoped catalog query
 	entries []storage.PropertyCatalogEntry // entries are returned to the handler
@@ -1804,6 +1872,82 @@ func (c *recordingPropertyCatalog) ListPropertyCatalogEntries(_ context.Context,
 		return nil, c.err
 	}
 	return append([]storage.PropertyCatalogEntry(nil), c.entries...), nil
+}
+
+func newCorePlanningQueryReader(t *testing.T, source controlplane.SourceConfig) *corePlanningQueryReader {
+	t.Helper()
+
+	router, err := clickhouse.NewTableRouter("events")
+	if err != nil {
+		t.Fatalf("new table router failed: %v", err)
+	}
+	builder, err := clickhouse.NewEventQueryBuilder(router, testQueryBuilderOptions(source)...)
+	if err != nil {
+		t.Fatalf("new event query builder failed: %v", err)
+	}
+	return &corePlanningQueryReader{builder: builder}
+}
+
+func testQueryBuilderOptions(source controlplane.SourceConfig) []clickhouse.EventQueryBuilderOption {
+	selectors := make([]storage.PropertySelector, 0, len(source.AllowedPropertyFilters))
+	for _, filter := range source.AllowedPropertyFilters {
+		name := strings.TrimSpace(filter.Name)
+		scope := storage.PropertyScope(strings.ToLower(strings.TrimSpace(filter.Scope)))
+		if name == "" {
+			continue
+		}
+		if scope != storage.PropertyScopeEvent && scope != storage.PropertyScopeUser {
+			continue
+		}
+		selectors = append(selectors, storage.PropertySelector{
+			Scope: scope,
+			Name:  name,
+		})
+	}
+	if len(selectors) == 0 {
+		return nil
+	}
+	return []clickhouse.EventQueryBuilderOption{
+		clickhouse.WithAllowedPropertyFilters(selectors...),
+	}
+}
+
+func (r *corePlanningQueryReader) ListEventsWithEvidence(ctx context.Context, query storage.EventListQuery) (storage.EventQueryResult, error) {
+	r.eventsCalls++
+	r.eventsQuery = query
+
+	// Plan through the real analytics-core ClickHouse query builder. The test
+	// intentionally stops before execution because it verifies service/core
+	// boundary guardrails, not local ClickHouse availability.
+	plan, err := r.builder.BuildEventsQuery(ctx, query)
+	if err != nil {
+		return storage.EventQueryResult{}, err
+	}
+	return storage.EventQueryResult{Records: []storage.EventRecord{}, Evidence: plan.QueryEvidence()}, nil
+}
+
+func (r *corePlanningQueryReader) ListEvents(ctx context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {
+	result, err := r.ListEventsWithEvidence(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return result.Records, nil
+}
+
+func (r *corePlanningQueryReader) ListRealtime(context.Context, storage.RealtimeQuery) ([]storage.EventRecord, error) {
+	return nil, errors.New("realtime is not supported by corePlanningQueryReader")
+}
+
+func (r *corePlanningQueryReader) ListRealtimeWithEvidence(context.Context, storage.RealtimeQuery) (storage.EventQueryResult, error) {
+	return storage.EventQueryResult{}, errors.New("realtime is not supported by corePlanningQueryReader")
+}
+
+func (r *corePlanningQueryReader) CountEvents(context.Context, storage.EventCountQuery) (int64, error) {
+	return 0, errors.New("goal count is not supported by corePlanningQueryReader")
+}
+
+func (r *corePlanningQueryReader) CountEventsWithEvidence(context.Context, storage.EventCountQuery) (storage.EventCountResult, error) {
+	return storage.EventCountResult{}, errors.New("goal count is not supported by corePlanningQueryReader")
 }
 
 func (r *recordingQueryReader) ListEvents(_ context.Context, query storage.EventListQuery) ([]storage.EventRecord, error) {
