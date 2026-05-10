@@ -770,10 +770,38 @@ func TestQueryPressureBuckets(t *testing.T) {
 		{
 			name: "medium",
 			evidence: storage.EventQueryEvidence{
+				Family:              storage.EventQueryFamilyEvents,
+				HasTimeLowerBound:   true,
+				HasTimeUpperBound:   true,
+				TimeWindowSeconds:   wideBoundedEventsPressureWindow - int64((time.Hour)/time.Second),
 				ScalarFilterCount:   4,
-				PropertyFilterCount: 2,
+				PropertyFilterCount: 0,
 			},
 			want: "medium",
+		},
+		{
+			name: "high exact wide scalar boundary",
+			evidence: storage.EventQueryEvidence{
+				Family:              storage.EventQueryFamilyEvents,
+				HasTimeLowerBound:   true,
+				HasTimeUpperBound:   true,
+				TimeWindowSeconds:   wideBoundedEventsPressureWindow,
+				ScalarFilterCount:   2,
+				PropertyFilterCount: 0,
+			},
+			want: "high",
+		},
+		{
+			name: "high wide scalar events",
+			evidence: storage.EventQueryEvidence{
+				Family:              storage.EventQueryFamilyEvents,
+				HasTimeLowerBound:   true,
+				HasTimeUpperBound:   true,
+				TimeWindowSeconds:   wideBoundedEventsPressureWindow + int64((time.Hour)/time.Second),
+				ScalarFilterCount:   4,
+				PropertyFilterCount: 0,
+			},
+			want: "high",
 		},
 		{
 			name: "high",
@@ -1004,6 +1032,99 @@ func TestEventsQueryPreservesCorePropertyFilterWindowGuardrail(t *testing.T) {
 	}
 	if !response.QueryEvidence.UsesPropertyTable || response.QueryEvidence.PropertyFilterCount != 1 {
 		t.Fatalf("expected property-table evidence, got %#v", response.QueryEvidence)
+	}
+}
+
+func TestEventsQueryMarksWideScalarWindowsHighPressure(t *testing.T) {
+	source := testSourceConfig()
+	reader := newCorePlanningQueryReader(t, source)
+	handler := newTestQueryHandler(t, source, reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&event_name=page_view&distinct_id=visitor_2&from=2026-05-03T09:00:00Z&to=2026-05-11T09:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected wide scalar Events query to succeed, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected one core planning call, got %d", reader.eventsCalls)
+	}
+	if len(reader.eventsQuery.PropertyFilters) != 0 {
+		t.Fatalf("expected scalar query to avoid property filters, got %#v", reader.eventsQuery.PropertyFilters)
+	}
+	var response queryEventsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode events response failed: %v", err)
+	}
+	if response.QueryEvidence == nil {
+		t.Fatal("expected query evidence from core planning boundary")
+	}
+	if response.QueryEvidence.Pressure != pressureHigh {
+		t.Fatalf("expected high pressure for wide scalar Events, got %#v", response.QueryEvidence)
+	}
+	if response.QueryEvidence.UsesPropertyTable || response.QueryEvidence.PropertyFilterCount != 0 {
+		t.Fatalf("expected scalar query evidence without property table, got %#v", response.QueryEvidence)
+	}
+}
+
+func TestEventsQueryMarksBoundedWindowOnlyEventsHighPressureAtExactBoundary(t *testing.T) {
+	source := testSourceConfig()
+	reader := newCorePlanningQueryReader(t, source)
+	handler := newTestQueryHandler(t, source, reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-09T09:00:00Z&to=2026-05-10T09:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected exact-boundary bounded Events query to succeed, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected one core planning call, got %d", reader.eventsCalls)
+	}
+	var response queryEventsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode events response failed: %v", err)
+	}
+	if response.QueryEvidence == nil {
+		t.Fatal("expected query evidence from core planning boundary")
+	}
+	if response.QueryEvidence.Pressure != pressureHigh {
+		t.Fatalf("expected high pressure at the exact bounded-window threshold, got %#v", response.QueryEvidence)
+	}
+	if response.QueryEvidence.TimeWindowSeconds != wideBoundedEventsPressureWindow {
+		t.Fatalf("expected exact threshold window evidence %d, got %#v", wideBoundedEventsPressureWindow, response.QueryEvidence)
+	}
+}
+
+func TestEventsQueryKeepsRecentScalarWindowsMediumPressure(t *testing.T) {
+	source := testSourceConfig()
+	reader := newCorePlanningQueryReader(t, source)
+	handler := newTestQueryHandler(t, source, reader)
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&event_name=page_view&distinct_id=visitor_2&from=2026-05-10T03:00:00Z&to=2026-05-10T09:00:00Z", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected recent scalar Events query to succeed, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsCalls != 1 {
+		t.Fatalf("expected one core planning call, got %d", reader.eventsCalls)
+	}
+	var response queryEventsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode events response failed: %v", err)
+	}
+	if response.QueryEvidence == nil {
+		t.Fatal("expected query evidence from core planning boundary")
+	}
+	if response.QueryEvidence.Pressure != pressureMedium {
+		t.Fatalf("expected medium pressure for recent scalar Events, got %#v", response.QueryEvidence)
+	}
+	if response.QueryEvidence.TimeWindowSeconds != int64((6*time.Hour)/time.Second) {
+		t.Fatalf("expected six-hour scalar window evidence, got %#v", response.QueryEvidence)
 	}
 }
 
