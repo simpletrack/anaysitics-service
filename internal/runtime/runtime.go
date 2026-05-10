@@ -277,6 +277,7 @@ func toQueryCredentials(credentials []config.QueryTokenCredential) []collectapi.
 			Token:     credential.Token,
 			NotBefore: credential.NotBefore,
 			ExpiresAt: credential.ExpiresAt,
+			Scopes:    append([]controlplane.ReadbackRoute(nil), credential.Scopes...),
 		})
 	}
 	return out

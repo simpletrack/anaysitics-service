@@ -33,10 +33,11 @@ const (
 
 // QueryTokenCredential describes one internal readback bearer token and its lifecycle window.
 type QueryTokenCredential struct {
-	ID        string    // ID is a non-secret alias used in operator audit logs
-	Token     string    // Token is the bearer secret accepted by the internal read API
-	NotBefore time.Time // NotBefore optionally delays token activation until this instant
-	ExpiresAt time.Time // ExpiresAt optionally rejects the token at or after this instant
+	ID        string                       // ID is a non-secret alias used in operator audit logs
+	Token     string                       // Token is the bearer secret accepted by the internal read API
+	NotBefore time.Time                    // NotBefore optionally delays token activation until this instant
+	ExpiresAt time.Time                    // ExpiresAt optionally rejects the token at or after this instant
+	Scopes    []controlplane.ReadbackRoute // Scopes optionally narrows the readback route families this token may call
 }
 
 // Config contains process-level runtime settings.
@@ -290,11 +291,16 @@ func primaryQueryCredentialFromEnv(primary string) (QueryTokenCredential, error)
 	if err != nil {
 		return QueryTokenCredential{}, err
 	}
+	scopes, err := parseQueryTokenScopesCSV(envString("ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES", ""))
+	if err != nil {
+		return QueryTokenCredential{}, err
+	}
 	return QueryTokenCredential{
 		ID:        envString("ANALYTICS_SERVICE_QUERY_TOKEN_ID", ""),
 		Token:     primary,
 		NotBefore: notBefore,
 		ExpiresAt: expiresAt,
+		Scopes:    scopes,
 	}, nil
 }
 
@@ -310,10 +316,11 @@ func decodeQueryRotationCredential(item json.RawMessage) (QueryTokenCredential, 
 		return QueryTokenCredential{Token: token}, nil
 	}
 	var encoded struct {
-		ID        string `json:"id"`
-		Token     string `json:"token"`
-		NotBefore string `json:"not_before"`
-		ExpiresAt string `json:"expires_at"`
+		ID        string   `json:"id"`
+		Token     string   `json:"token"`
+		NotBefore string   `json:"not_before"`
+		ExpiresAt string   `json:"expires_at"`
+		Scopes    []string `json:"scopes"`
 	}
 	if err := json.Unmarshal(item, &encoded); err != nil {
 		return QueryTokenCredential{}, err
@@ -329,12 +336,69 @@ func decodeQueryRotationCredential(item json.RawMessage) (QueryTokenCredential, 
 	if err != nil {
 		return QueryTokenCredential{}, err
 	}
+	scopes, err := parseQueryTokenScopesList(encoded.Scopes)
+	if err != nil {
+		return QueryTokenCredential{}, err
+	}
 	return QueryTokenCredential{
 		ID:        encoded.ID,
 		Token:     encoded.Token,
 		NotBefore: notBefore,
 		ExpiresAt: expiresAt,
+		Scopes:    scopes,
 	}, nil
+}
+
+func parseQueryTokenScopesCSV(raw string) ([]controlplane.ReadbackRoute, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	return parseQueryTokenScopesList(strings.Split(raw, ","))
+}
+
+func parseQueryTokenScopesList(raw []string) ([]controlplane.ReadbackRoute, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	scopes := make([]controlplane.ReadbackRoute, 0, len(raw))
+	seen := make(map[controlplane.ReadbackRoute]struct{}, len(raw))
+	for _, value := range raw {
+		scope, err := parseQueryTokenScope(value)
+		if err != nil {
+			return nil, err
+		}
+		if scope == "" {
+			continue
+		}
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+		seen[scope] = struct{}{}
+		scopes = append(scopes, scope)
+	}
+	if len(scopes) == 0 {
+		return nil, nil
+	}
+	return scopes, nil
+}
+
+func parseQueryTokenScope(raw string) (controlplane.ReadbackRoute, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch controlplane.ReadbackRoute(value) {
+	case "":
+		return "", nil
+	case controlplane.ReadbackRouteRealtime:
+		return controlplane.ReadbackRouteRealtime, nil
+	case controlplane.ReadbackRouteEvents:
+		return controlplane.ReadbackRouteEvents, nil
+	case controlplane.ReadbackRouteProperties:
+		return controlplane.ReadbackRouteProperties, nil
+	case controlplane.ReadbackRouteGoals:
+		return controlplane.ReadbackRouteGoals, nil
+	default:
+		return "", errors.New("query token scope must be one of realtime, events, properties, goals")
+	}
 }
 
 func queryTokenValues(credentials []QueryTokenCredential) []string {

@@ -149,7 +149,7 @@ func (h *Handler) handleRealtime(ctx fiber.Ctx) error {
 	if h.opts.QueryReader == nil {
 		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 	}
-	decision, ok := h.requireQueryToken(ctx)
+	decision, ok := h.requireQueryToken(ctx, controlplane.ReadbackRouteRealtime)
 	if !ok {
 		return nil
 	}
@@ -203,7 +203,7 @@ func (h *Handler) handleEvents(ctx fiber.Ctx) error {
 	if h.opts.QueryReader == nil {
 		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 	}
-	decision, ok := h.requireQueryToken(ctx)
+	decision, ok := h.requireQueryToken(ctx, controlplane.ReadbackRouteEvents)
 	if !ok {
 		return nil
 	}
@@ -281,7 +281,7 @@ func (h *Handler) handleGoals(ctx fiber.Ctx) error {
 	if h.opts.QueryReader == nil {
 		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 	}
-	decision, ok := h.requireQueryToken(ctx)
+	decision, ok := h.requireQueryToken(ctx, controlplane.ReadbackRouteGoals)
 	if !ok {
 		return nil
 	}
@@ -340,7 +340,7 @@ func (h *Handler) handleProperties(ctx fiber.Ctx) error {
 	if h.opts.PropertyCatalog == nil {
 		return h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
 	}
-	decision, ok := h.requireQueryToken(ctx)
+	decision, ok := h.requireQueryToken(ctx, controlplane.ReadbackRouteProperties)
 	if !ok {
 		return nil
 	}
@@ -445,7 +445,7 @@ func eventColumnFilters(ctx fiber.Ctx) []storage.EventFilter {
 	return filters
 }
 
-func (h *Handler) requireQueryToken(ctx fiber.Ctx) (queryTokenAuthDecision, bool) {
+func (h *Handler) requireQueryToken(ctx fiber.Ctx, route controlplane.ReadbackRoute) (queryTokenAuthDecision, bool) {
 	// A missing accepted-token list means the internal read API was not safely
 	// configured, so hide the route shape instead of returning auth details.
 	if len(h.opts.QueryCredentials) == 0 {
@@ -458,6 +458,14 @@ func (h *Handler) requireQueryToken(ctx fiber.Ctx) (queryTokenAuthDecision, bool
 	if decision.State == queryTokenAuthUnknown || decision.State == queryTokenAuthExpired || decision.State == queryTokenAuthNotYetValid {
 		h.auditRejectedQueryToken(ctx, decision)
 		_ = h.writeJSON(ctx, fiber.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
+		return queryTokenAuthDecision{}, false
+	}
+	// Enforce token-local route scopes before source resolution so a valid token
+	// cannot be reused across readback families it was never meant to reach.
+	if !decision.Credential.AllowsReadbackRoute(route) {
+		decision.State = queryTokenAuthScopeDenied
+		h.auditRejectedQueryToken(ctx, decision)
+		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "forbidden"})
 		return queryTokenAuthDecision{}, false
 	}
 	return decision, true
@@ -507,6 +515,8 @@ func (h *Handler) auditRejectedQueryToken(ctx fiber.Ctx, decision queryTokenAuth
 		log.Printf("rejected expired query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, ctx.Path(), h.clientIP(ctx))
 	case queryTokenAuthNotYetValid:
 		log.Printf("rejected not-yet-valid query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, ctx.Path(), h.clientIP(ctx))
+	case queryTokenAuthScopeDenied:
+		log.Printf("rejected out-of-scope query token token_id=%s route=%s allowed_scopes=%v remote_ip=%s", decision.Credential.ID, ctx.Path(), decision.Credential.Scopes, h.clientIP(ctx))
 	default:
 		log.Printf("rejected unknown query token route=%s remote_ip=%s", ctx.Path(), h.clientIP(ctx))
 	}

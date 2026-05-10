@@ -1457,6 +1457,56 @@ func TestQueryRoutesRejectNotYetValidBearerToken(t *testing.T) {
 	assertAuditLog(t, logs.String(), "token_id=next", "/v1/realtime", "future-token")
 }
 
+func TestQueryRoutesRejectBearerTokenOutsideRouteScope(t *testing.T) {
+	logs := captureLogs(t)
+	resolver := &countingResolver{source: testSourceConfig()}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, resolver, reader, []QueryCredential{
+		{
+			ID:     "events-only",
+			Token:  "events-token",
+			Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteEvents},
+		},
+	})
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/realtime?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer events-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusForbidden {
+		t.Fatalf("expected forbidden response for out-of-scope token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("out-of-scope query token should not resolve source, got %d calls", resolver.calls)
+	}
+	if reader.realtimeQuery.SourceID != "" {
+		t.Fatalf("out-of-scope query token should not reach EventReader, got %#v", reader.realtimeQuery)
+	}
+	assertAuditLog(t, logs.String(), "token_id=events-only", "/v1/realtime", "events-token")
+}
+
+func TestQueryRoutesAcceptBearerTokenWithinRouteScope(t *testing.T) {
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, &countingResolver{source: testSourceConfig()}, reader, []QueryCredential{
+		{
+			ID:     "events-only",
+			Token:  "events-token",
+			Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteEvents},
+		},
+	})
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer events-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected scoped query token to be accepted on events route, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsQuery.SourceID != "source_control" {
+		t.Fatalf("expected scoped query token request to reach EventReader, got %#v", reader.eventsQuery)
+	}
+}
+
 func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
 	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
 

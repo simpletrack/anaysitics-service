@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/simpletrack/analytics-service/internal/controlplane"
 )
 
 func TestLoadFromEnvRequiresRedisAddressByDefault(t *testing.T) {
@@ -165,8 +167,9 @@ func TestLoadFromEnvAcceptsStructuredQueryTokenCredentials(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "current-token")
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_ID", "current")
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_EXPIRES_AT", "2026-05-03T12:00:00Z")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES", "realtime, events")
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `[
-		{"id":"previous","token":"previous-token","expires_at":"2026-05-03T10:15:00Z"},
+		{"id":"previous","token":"previous-token","expires_at":"2026-05-03T10:15:00Z","scopes":["properties"]},
 		"legacy-token"
 	]`)
 	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
@@ -182,11 +185,17 @@ func TestLoadFromEnvAcceptsStructuredQueryTokenCredentials(t *testing.T) {
 	if len(cfg.QueryCredentials) != 3 {
 		t.Fatalf("expected three query credentials, got %#v", cfg.QueryCredentials)
 	}
+	if len(cfg.QueryCredentials[0].Scopes) != 2 {
+		t.Fatalf("expected primary credential scopes, got %#v", cfg.QueryCredentials[0])
+	}
 	if cfg.QueryCredentials[1].ID != "previous" {
 		t.Fatalf("expected previous token id, got %#v", cfg.QueryCredentials[1])
 	}
 	if cfg.QueryCredentials[1].ExpiresAt.Format(time.RFC3339) != "2026-05-03T10:15:00Z" {
 		t.Fatalf("unexpected rotated token expiry %#v", cfg.QueryCredentials[1])
+	}
+	if len(cfg.QueryCredentials[1].Scopes) != 1 || cfg.QueryCredentials[1].Scopes[0] != controlplane.ReadbackRouteProperties {
+		t.Fatalf("expected structured credential scopes, got %#v", cfg.QueryCredentials[1])
 	}
 }
 
@@ -219,6 +228,20 @@ func TestLoadFromEnvRejectsStructuredQueryTokenWithoutToken(t *testing.T) {
 
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatalf("expected structured query token without token to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidQueryTokenScope(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "current-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES", "events, broken")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected invalid query token scope to fail")
 	}
 }
 
