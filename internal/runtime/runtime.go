@@ -273,11 +273,12 @@ func toQueryCredentials(credentials []config.QueryTokenCredential) []collectapi.
 	out := make([]collectapi.QueryCredential, 0, len(credentials))
 	for _, credential := range credentials {
 		out = append(out, collectapi.QueryCredential{
-			ID:        credential.ID,
-			Token:     credential.Token,
-			NotBefore: credential.NotBefore,
-			ExpiresAt: credential.ExpiresAt,
-			Scopes:    append([]controlplane.ReadbackRoute(nil), credential.Scopes...),
+			ID:               credential.ID,
+			Token:            credential.Token,
+			NotBefore:        credential.NotBefore,
+			ExpiresAt:        credential.ExpiresAt,
+			Scopes:           append([]controlplane.ReadbackRoute(nil), credential.Scopes...),
+			AllowedWriteKeys: append([]string(nil), credential.AllowedWriteKeys...),
 		})
 	}
 	return out

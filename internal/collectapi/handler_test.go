@@ -1507,6 +1507,61 @@ func TestQueryRoutesAcceptBearerTokenWithinRouteScope(t *testing.T) {
 	}
 }
 
+func TestQueryRoutesRejectBearerTokenOutsideWriteKeyAllowlist(t *testing.T) {
+	logs := captureLogs(t)
+	resolver := &countingResolver{source: testSourceConfig()}
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, resolver, reader, []QueryCredential{
+		{
+			ID:               "docs-only",
+			Token:            "events-token",
+			Scopes:           []controlplane.ReadbackRoute{controlplane.ReadbackRouteEvents},
+			AllowedWriteKeys: []string{"wk_docs"},
+		},
+	})
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer events-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusForbidden {
+		t.Fatalf("expected forbidden response for out-of-source token, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("out-of-source query token should not resolve source, got %d calls", resolver.calls)
+	}
+	if reader.eventsQuery.SourceID != "" {
+		t.Fatalf("out-of-source query token should not reach EventReader, got %#v", reader.eventsQuery)
+	}
+	assertAuditLog(t, logs.String(), "token_id=docs-only", "/v1/events", "events-token")
+	if !strings.Contains(logs.String(), "allowed_write_keys=[wk_docs]") {
+		t.Fatalf("expected write-key allowlist in audit log, got %q", logs.String())
+	}
+}
+
+func TestQueryRoutesAcceptBearerTokenWithinWriteKeyAllowlist(t *testing.T) {
+	reader := &recordingQueryReader{}
+	handler := newTestQueryHandlerWithResolverAndCredentials(t, &countingResolver{source: testSourceConfig()}, reader, []QueryCredential{
+		{
+			ID:               "live-events",
+			Token:            "events-token",
+			Scopes:           []controlplane.ReadbackRoute{controlplane.ReadbackRouteEvents},
+			AllowedWriteKeys: []string{"wk_live"},
+		},
+	})
+
+	ctx := serve(handler, fiber.MethodGet, "/v1/events?write_key=wk_live&from=2026-05-03T09:00:00Z&to=2026-05-03T10:00:00Z", "", map[string]string{
+		"Authorization": "Bearer events-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected write-key scoped query token to be accepted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if reader.eventsQuery.SourceID != "source_control" {
+		t.Fatalf("expected write-key scoped token request to reach EventReader, got %#v", reader.eventsQuery)
+	}
+}
+
 func TestQueryRoutesReturnCORSForMissingWriteKey(t *testing.T) {
 	handler := newTestQueryHandler(t, testSourceConfig(), &recordingQueryReader{})
 

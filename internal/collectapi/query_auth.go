@@ -11,22 +11,24 @@ import (
 
 // QueryCredential describes one internal readback bearer token and its lifecycle window.
 type QueryCredential struct {
-	ID        string                       // ID is a non-secret alias emitted in runtime audit logs
-	Token     string                       // Token is the bearer secret accepted by the internal read API
-	NotBefore time.Time                    // NotBefore optionally delays token activation until this instant
-	ExpiresAt time.Time                    // ExpiresAt optionally rejects the token at or after this instant
-	Scopes    []controlplane.ReadbackRoute // Scopes optionally narrows the readback route families this token may call
+	ID               string                       // ID is a non-secret alias emitted in runtime audit logs
+	Token            string                       // Token is the bearer secret accepted by the internal read API
+	NotBefore        time.Time                    // NotBefore optionally delays token activation until this instant
+	ExpiresAt        time.Time                    // ExpiresAt optionally rejects the token at or after this instant
+	Scopes           []controlplane.ReadbackRoute // Scopes optionally narrows the readback route families this token may call
+	AllowedWriteKeys []string                     // AllowedWriteKeys optionally narrows the token to specific runtime write keys
 }
 
 type queryTokenAuthState string
 
 const (
-	queryTokenAuthUnknown      queryTokenAuthState = "unknown"
-	queryTokenAuthAllowed      queryTokenAuthState = "allowed"
-	queryTokenAuthAllowedGrace queryTokenAuthState = "allowed_grace"
-	queryTokenAuthExpired      queryTokenAuthState = "expired"
-	queryTokenAuthNotYetValid  queryTokenAuthState = "not_yet_valid"
-	queryTokenAuthScopeDenied  queryTokenAuthState = "scope_denied"
+	queryTokenAuthUnknown        queryTokenAuthState = "unknown"
+	queryTokenAuthAllowed        queryTokenAuthState = "allowed"
+	queryTokenAuthAllowedGrace   queryTokenAuthState = "allowed_grace"
+	queryTokenAuthExpired        queryTokenAuthState = "expired"
+	queryTokenAuthNotYetValid    queryTokenAuthState = "not_yet_valid"
+	queryTokenAuthScopeDenied    queryTokenAuthState = "scope_denied"
+	queryTokenAuthWriteKeyDenied queryTokenAuthState = "write_key_denied"
 )
 
 type queryTokenAuthDecision struct {
@@ -52,6 +54,7 @@ func normalizeQueryCredentials(primary string, legacy []string, explicit []Query
 		if credential.ID == "" {
 			credential.ID = fallbackID
 		}
+		credential.AllowedWriteKeys = normalizeQueryWriteKeys(credential.AllowedWriteKeys)
 		normalized = append(normalized, credential)
 	}
 
@@ -115,4 +118,44 @@ func (c QueryCredential) AllowsReadbackRoute(route controlplane.ReadbackRoute) b
 		}
 	}
 	return false
+}
+
+// AllowsWriteKey reports whether the token may target one runtime write key.
+//
+// An empty allowlist keeps backward compatibility and means the token may call
+// any source that also passes route, origin, and readback-policy checks.
+func (c QueryCredential) AllowsWriteKey(writeKey string) bool {
+	writeKey = strings.TrimSpace(writeKey)
+	if writeKey == "" || len(c.AllowedWriteKeys) == 0 {
+		return true
+	}
+	for _, allowed := range c.AllowedWriteKeys {
+		if allowed == writeKey {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeQueryWriteKeys(writeKeys []string) []string {
+	if len(writeKeys) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(writeKeys))
+	seen := make(map[string]struct{}, len(writeKeys))
+	for _, writeKey := range writeKeys {
+		writeKey = strings.TrimSpace(writeKey)
+		if writeKey == "" {
+			continue
+		}
+		if _, ok := seen[writeKey]; ok {
+			continue
+		}
+		seen[writeKey] = struct{}{}
+		normalized = append(normalized, writeKey)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }

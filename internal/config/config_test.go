@@ -168,8 +168,9 @@ func TestLoadFromEnvAcceptsStructuredQueryTokenCredentials(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_ID", "current")
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_EXPIRES_AT", "2026-05-03T12:00:00Z")
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES", "realtime, events")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_WRITE_KEYS", "wk_live, wk_docs")
 	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `[
-		{"id":"previous","token":"previous-token","expires_at":"2026-05-03T10:15:00Z","scopes":["properties"]},
+		{"id":"previous","token":"previous-token","expires_at":"2026-05-03T10:15:00Z","scopes":["properties"],"write_keys":["wk_docs","wk_docs"," "]},
 		"legacy-token"
 	]`)
 	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
@@ -188,6 +189,9 @@ func TestLoadFromEnvAcceptsStructuredQueryTokenCredentials(t *testing.T) {
 	if len(cfg.QueryCredentials[0].Scopes) != 2 {
 		t.Fatalf("expected primary credential scopes, got %#v", cfg.QueryCredentials[0])
 	}
+	if !slices.Equal(cfg.QueryCredentials[0].AllowedWriteKeys, []string{"wk_live", "wk_docs"}) {
+		t.Fatalf("expected primary credential write-key allowlist, got %#v", cfg.QueryCredentials[0])
+	}
 	if cfg.QueryCredentials[1].ID != "previous" {
 		t.Fatalf("expected previous token id, got %#v", cfg.QueryCredentials[1])
 	}
@@ -196,6 +200,9 @@ func TestLoadFromEnvAcceptsStructuredQueryTokenCredentials(t *testing.T) {
 	}
 	if len(cfg.QueryCredentials[1].Scopes) != 1 || cfg.QueryCredentials[1].Scopes[0] != controlplane.ReadbackRouteProperties {
 		t.Fatalf("expected structured credential scopes, got %#v", cfg.QueryCredentials[1])
+	}
+	if !slices.Equal(cfg.QueryCredentials[1].AllowedWriteKeys, []string{"wk_docs"}) {
+		t.Fatalf("expected structured credential write-key allowlist, got %#v", cfg.QueryCredentials[1])
 	}
 }
 

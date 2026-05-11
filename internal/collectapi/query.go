@@ -468,6 +468,15 @@ func (h *Handler) requireQueryToken(ctx fiber.Ctx, route controlplane.ReadbackRo
 		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "forbidden"})
 		return queryTokenAuthDecision{}, false
 	}
+	// Enforce token-local source boundaries before control-plane resolution so
+	// one leaked token cannot be replayed across unrelated write keys.
+	writeKey := h.queryWriteKey(ctx)
+	if writeKey != "" && !decision.Credential.AllowsWriteKey(writeKey) {
+		decision.State = queryTokenAuthWriteKeyDenied
+		h.auditRejectedQueryToken(ctx, decision)
+		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		return queryTokenAuthDecision{}, false
+	}
 	return decision, true
 }
 
@@ -517,6 +526,8 @@ func (h *Handler) auditRejectedQueryToken(ctx fiber.Ctx, decision queryTokenAuth
 		log.Printf("rejected not-yet-valid query token token_id=%s route=%s remote_ip=%s", decision.Credential.ID, ctx.Path(), h.clientIP(ctx))
 	case queryTokenAuthScopeDenied:
 		log.Printf("rejected out-of-scope query token token_id=%s route=%s allowed_scopes=%v remote_ip=%s", decision.Credential.ID, ctx.Path(), decision.Credential.Scopes, h.clientIP(ctx))
+	case queryTokenAuthWriteKeyDenied:
+		log.Printf("rejected out-of-source query token token_id=%s route=%s allowed_write_keys=%v remote_ip=%s", decision.Credential.ID, ctx.Path(), decision.Credential.AllowedWriteKeys, h.clientIP(ctx))
 	default:
 		log.Printf("rejected unknown query token route=%s remote_ip=%s", ctx.Path(), h.clientIP(ctx))
 	}

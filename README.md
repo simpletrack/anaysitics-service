@@ -106,13 +106,14 @@ server-side in `simpletrack-saas` so the internal bearer token never reaches the
 browser. `OPTIONS /v1/realtime`, `OPTIONS /v1/events`, and
 `OPTIONS /v1/properties` exist for protocol completeness and trusted
 service/browser-shell integrations, but the actual GET request still requires
-the bearer token, token route scope, source allowlist check, and source
+the bearer token, token route scope, optional token write-key allowlist, source allowlist check, and source
 `readback_policy`.
 
 ```powershell
 $env:ANALYTICS_SERVICE_QUERY_ENABLED='true'
 $env:ANALYTICS_SERVICE_QUERY_TOKEN='query-service-token'
 $env:ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES='realtime,events,properties'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN_WRITE_KEYS='wk_local'
 $env:ANALYTICS_SERVICE_CLICKHOUSE_ADDR='127.0.0.1:29000'
 $env:ANALYTICS_SERVICE_CLICKHOUSE_DATABASE='analytics_core'
 $env:ANALYTICS_SERVICE_CLICKHOUSE_USER='analytics_core'
@@ -167,9 +168,16 @@ JSON allowlist once all callers have moved. This service only enforces accepted
 runtime tokens; token creation, storage, and operator workflow remain owned by
 deployment and the SaaS control-plane environment. Legacy string arrays such as
 `["query-service-token-v1"]` still work, but structured entries add a bounded
-activation/expiry window, optional per-route `scopes`, and emit audit logs when
-a rotated token is accepted, an out-of-scope token is presented, or an
-expired/not-yet-valid token is presented.
+activation/expiry window, optional per-route `scopes`, optional `write_keys`
+source allowlists, and emit audit logs when a rotated token is accepted, an
+out-of-scope or out-of-source token is presented, or an expired/not-yet-valid
+token is presented.
+
+Use `ANALYTICS_SERVICE_QUERY_TOKEN_WRITE_KEYS` for the primary token or
+`write_keys` inside `ANALYTICS_SERVICE_QUERY_TOKENS_JSON` when one token should
+be limited to a subset of runtime sources. This lets deployments keep separate
+readback tokens per route family and per source without changing the control
+plane or browser-visible URLs.
 
 By default the service only accepts `/collect` and durably enqueues events to Redis.
 To run ingestion in the same process for local or small deployments, opt in:

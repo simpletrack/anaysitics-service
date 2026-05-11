@@ -33,11 +33,12 @@ const (
 
 // QueryTokenCredential describes one internal readback bearer token and its lifecycle window.
 type QueryTokenCredential struct {
-	ID        string                       // ID is a non-secret alias used in operator audit logs
-	Token     string                       // Token is the bearer secret accepted by the internal read API
-	NotBefore time.Time                    // NotBefore optionally delays token activation until this instant
-	ExpiresAt time.Time                    // ExpiresAt optionally rejects the token at or after this instant
-	Scopes    []controlplane.ReadbackRoute // Scopes optionally narrows the readback route families this token may call
+	ID               string                       // ID is a non-secret alias used in operator audit logs
+	Token            string                       // Token is the bearer secret accepted by the internal read API
+	NotBefore        time.Time                    // NotBefore optionally delays token activation until this instant
+	ExpiresAt        time.Time                    // ExpiresAt optionally rejects the token at or after this instant
+	Scopes           []controlplane.ReadbackRoute // Scopes optionally narrows the readback route families this token may call
+	AllowedWriteKeys []string                     // AllowedWriteKeys optionally narrows the token to specific runtime write keys
 }
 
 // Config contains process-level runtime settings.
@@ -283,6 +284,7 @@ func queryCredentialsFromEnv(primary string) ([]QueryTokenCredential, error) {
 }
 
 func primaryQueryCredentialFromEnv(primary string) (QueryTokenCredential, error) {
+	allowedWriteKeys := parseCSV(envString("ANALYTICS_SERVICE_QUERY_TOKEN_WRITE_KEYS", ""))
 	notBefore, err := envOptionalTime("ANALYTICS_SERVICE_QUERY_TOKEN_NOT_BEFORE")
 	if err != nil {
 		return QueryTokenCredential{}, err
@@ -296,11 +298,12 @@ func primaryQueryCredentialFromEnv(primary string) (QueryTokenCredential, error)
 		return QueryTokenCredential{}, err
 	}
 	return QueryTokenCredential{
-		ID:        envString("ANALYTICS_SERVICE_QUERY_TOKEN_ID", ""),
-		Token:     primary,
-		NotBefore: notBefore,
-		ExpiresAt: expiresAt,
-		Scopes:    scopes,
+		ID:               envString("ANALYTICS_SERVICE_QUERY_TOKEN_ID", ""),
+		Token:            primary,
+		NotBefore:        notBefore,
+		ExpiresAt:        expiresAt,
+		Scopes:           scopes,
+		AllowedWriteKeys: allowedWriteKeys,
 	}, nil
 }
 
@@ -321,6 +324,7 @@ func decodeQueryRotationCredential(item json.RawMessage) (QueryTokenCredential, 
 		NotBefore string   `json:"not_before"`
 		ExpiresAt string   `json:"expires_at"`
 		Scopes    []string `json:"scopes"`
+		WriteKeys []string `json:"write_keys"`
 	}
 	if err := json.Unmarshal(item, &encoded); err != nil {
 		return QueryTokenCredential{}, err
@@ -341,11 +345,12 @@ func decodeQueryRotationCredential(item json.RawMessage) (QueryTokenCredential, 
 		return QueryTokenCredential{}, err
 	}
 	return QueryTokenCredential{
-		ID:        encoded.ID,
-		Token:     encoded.Token,
-		NotBefore: notBefore,
-		ExpiresAt: expiresAt,
-		Scopes:    scopes,
+		ID:               encoded.ID,
+		Token:            encoded.Token,
+		NotBefore:        notBefore,
+		ExpiresAt:        expiresAt,
+		Scopes:           scopes,
+		AllowedWriteKeys: normalizeStringList(encoded.WriteKeys),
 	}, nil
 }
 
@@ -411,6 +416,36 @@ func queryTokenValues(credentials []QueryTokenCredential) []string {
 		values = append(values, credential.Token)
 	}
 	return values
+}
+
+func parseCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return normalizeStringList(strings.Split(raw, ","))
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func envBool(name string, fallback bool) bool {
