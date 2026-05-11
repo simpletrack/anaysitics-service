@@ -1709,6 +1709,30 @@ func TestSwaggerRoutesServeOpenAPIWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestOpenAPIQueryEvidenceDocumentsObservedRows keeps the served schema aligned with readback evidence responses.
+func TestOpenAPIQueryEvidenceDocumentsObservedRows(t *testing.T) {
+	// Read the checked-in OpenAPI document rather than a fixture so schema drift
+	// is caught before the Swagger route serves an outdated internal contract.
+	body, err := os.ReadFile(filepath.Join("..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read openapi file failed: %v", err)
+	}
+	spec := string(body)
+
+	// Lock both the required-field list and the property definition because API
+	// clients need to know that observed rows is always present and is metadata.
+	for _, fragment := range []string{
+		"- observed_rows",
+		"observed_rows:",
+		"Result cardinality observed by this readback execution.",
+		"not a scanned-row estimate",
+	} {
+		if !strings.Contains(spec, fragment) {
+			t.Fatalf("expected QueryEvidence OpenAPI schema to contain %q", fragment)
+		}
+	}
+}
+
 func newTestHandler(t *testing.T, source controlplane.SourceConfig, trustForwarded bool) (*fiber.App, *recordingBus) {
 	t.Helper()
 
