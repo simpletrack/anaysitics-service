@@ -106,6 +106,7 @@ type queryEvidenceResponse struct {
 	PropertyFilters     []queryPropertyFilterEvidenceResponse `json:"property_filters,omitempty"` // PropertyFilters records typed property predicate shapes without values
 	SortField           string                                `json:"sort_field,omitempty"`       // SortField is the effective allowlisted sort field
 	SortDirection       string                                `json:"sort_direction"`             // SortDirection is the effective allowlisted sort direction
+	ObservedRows        int64                                 `json:"observed_rows"`              // ObservedRows is the result cardinality returned by this execution
 	Pressure            string                                `json:"pressure"`                   // Pressure is the coarse low/medium/high read-side triage bucket
 }
 
@@ -394,7 +395,7 @@ func (h *Handler) listRealtime(ctx context.Context, query storage.RealtimeQuery)
 		if err != nil {
 			return nil, nil, err
 		}
-		return result.Records, toQueryEvidenceResponse(result.Evidence), nil
+		return result.Records, toQueryEvidenceResponse(result.Evidence, int64(len(result.Records))), nil
 	}
 	records, err := h.opts.QueryReader.ListRealtime(ctx, query)
 	return records, nil, err
@@ -409,7 +410,7 @@ func (h *Handler) listEvents(ctx context.Context, query storage.EventListQuery) 
 		if err != nil {
 			return nil, nil, err
 		}
-		return result.Records, toQueryEvidenceResponse(result.Evidence), nil
+		return result.Records, toQueryEvidenceResponse(result.Evidence, int64(len(result.Records))), nil
 	}
 	records, err := h.opts.QueryReader.ListEvents(ctx, query)
 	return records, nil, err
@@ -423,7 +424,7 @@ func (h *Handler) countEvents(ctx context.Context, query storage.EventCountQuery
 		if err != nil {
 			return 0, nil, err
 		}
-		return result.Count, toQueryEvidenceResponse(result.Evidence), nil
+		return result.Count, toQueryEvidenceResponse(result.Evidence, result.Count), nil
 	}
 	count, err := h.opts.QueryReader.CountEvents(ctx, query)
 	return count, nil, err
@@ -791,13 +792,15 @@ func toQueryEventResponses(records []storage.EventRecord) []queryEventResponse {
 }
 
 // toQueryEvidenceResponse converts analytics-core evidence into the internal API shape.
-func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidenceResponse {
+func toQueryEvidenceResponse(evidence storage.EventQueryEvidence, observedRows int64) *queryEvidenceResponse {
 	if evidence.Family == "" {
 		return nil
 	}
 	// Convert only the structural filter shape. The evidence intentionally
 	// leaves property values server-side so readback diagnostics do not echo
-	// user or event property values into control-plane responses.
+	// user or event property values into control-plane responses. observedRows
+	// is execution metadata, not a scanned-row estimate, so pressure still uses
+	// the structural evidence until row-volume policy is explicitly approved.
 	return &queryEvidenceResponse{
 		Family:              string(evidence.Family),
 		ReadPath:            string(evidence.ReadPath),
@@ -813,6 +816,7 @@ func toQueryEvidenceResponse(evidence storage.EventQueryEvidence) *queryEvidence
 		PropertyFilters:     toPropertyFilterEvidenceResponses(evidence.PropertyFilters),
 		SortField:           string(evidence.SortField),
 		SortDirection:       string(evidence.SortDirection),
+		ObservedRows:        observedRows,
 		Pressure:            queryPressure(evidence),
 	}
 }

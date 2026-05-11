@@ -409,6 +409,9 @@ func TestRealtimeQueryReturnsRecords(t *testing.T) {
 	if response.QueryEvidence.Pressure != "low" {
 		t.Fatalf("expected realtime pressure low, got %#v", response.QueryEvidence)
 	}
+	if response.QueryEvidence.ObservedRows != 1 {
+		t.Fatalf("expected realtime observed row count 1, got %#v", response.QueryEvidence)
+	}
 	if response.QueryEvidence.EffectiveLimit != 50 || response.QueryEvidence.Offset != 0 {
 		t.Fatalf("expected realtime shape evidence limit/offset, got %#v", response.QueryEvidence)
 	}
@@ -648,6 +651,9 @@ func TestEventsQueryReturnsRecords(t *testing.T) {
 	if response.QueryEvidence.Pressure != "high" {
 		t.Fatalf("expected events pressure high, got %#v", response.QueryEvidence)
 	}
+	if response.QueryEvidence.ObservedRows != 1 {
+		t.Fatalf("expected events observed row count 1, got %#v", response.QueryEvidence)
+	}
 	if response.QueryEvidence.EffectiveLimit != 25 || response.QueryEvidence.Offset != 3 {
 		t.Fatalf("expected events shape evidence limit/offset, got %#v", response.QueryEvidence)
 	}
@@ -716,6 +722,9 @@ func TestGoalsQueryReturnsMatchingEventCount(t *testing.T) {
 	}
 	if response.QueryEvidence == nil || response.QueryEvidence.Family != "goal" || response.QueryEvidence.Pressure != "medium" {
 		t.Fatalf("expected goal query evidence, got %#v", response.QueryEvidence)
+	}
+	if response.QueryEvidence.ObservedRows != 3 {
+		t.Fatalf("expected goal observed row count 3, got %#v", response.QueryEvidence)
 	}
 }
 
