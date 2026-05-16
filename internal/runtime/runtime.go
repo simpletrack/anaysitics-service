@@ -26,7 +26,7 @@ import (
 // Runtime owns the assembled analytics data-plane dependencies.
 type Runtime struct {
 	app       *fiber.App           // app serves health, tracker, collect, query, and documentation routes
-	processor *ingestion.Processor // processor consumes Redis Stream messages when ingestion is enabled
+	processor *ingestion.Processor // processor consumes configured queue messages when ingestion is enabled
 	closers   []io.Closer          // closers release network clients opened by the runtime assembly
 	worker    chan error           // worker receives the optional ingestion worker terminal error
 }
@@ -50,8 +50,8 @@ func New(cfg config.Config) (*Runtime, error) {
 		closers = append(closers, geoCloser)
 	}
 
-	// Build the event bus before exposing HTTP routes. The default path is Redis
-	// Stream so accepted /collect responses correspond to durable enqueueing.
+	// Build the event bus before exposing HTTP routes. Redis remains the local
+	// default, while Kafka is the production EventBus provider.
 	bus, busClosers, err := newEventBus(cfg)
 	if err != nil {
 		_ = closeAll(closers)
@@ -216,6 +216,8 @@ func newEventBus(cfg config.Config) (eventbus.EventBus, []io.Closer, error) {
 	switch cfg.EventBus {
 	case "redis":
 		return newRedisBus(cfg)
+	case "kafka":
+		return newKafkaBus(cfg)
 	case "direct":
 		return newMemoryBus(), nil, nil
 	default:

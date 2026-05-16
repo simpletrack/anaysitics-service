@@ -245,8 +245,8 @@ func (h *Handler) handleCollect(ctx fiber.Ctx) error {
 		return h.writeCollectError(ctx, envelope, err)
 	}
 
-	// Return acceptance only after EventBus.Publish succeeds. For the default
-	// Redis runtime this means the event has reached the configured stream.
+	// Return acceptance only after EventBus.Publish succeeds. For durable
+	// runtime providers this means the event has reached the configured queue.
 	return h.writeJSON(ctx, fiber.StatusAccepted, AcceptedResponse{
 		ID:         envelope.ID,
 		ReceivedAt: envelope.ReceivedAt.Format(time.RFC3339Nano),

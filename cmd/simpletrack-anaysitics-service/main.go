@@ -33,7 +33,7 @@ func main() {
 	}()
 
 	// Use one cancellation context for both HTTP shutdown and worker shutdown so
-	// Redis blocking reads and Fiber serving stop together on process signals.
+	// queue consumers and Fiber serving stop together on process signals.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	app.Start(ctx)
@@ -61,7 +61,7 @@ func main() {
 		}
 	case <-ctx.Done():
 		// Shutdown stops accepting HTTP requests; cancelling ctx also lets the
-		// worker leave Redis blocking reads and return context.Canceled.
+		// worker leave queue reads and return context.Canceled.
 		if err := app.App().Shutdown(); err != nil {
 			log.Printf("shutdown server: %v", err)
 		}

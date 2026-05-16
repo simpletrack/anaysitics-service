@@ -20,7 +20,7 @@ import (
 
 func newIngestionProcessor(ctx context.Context, cfg config.Config, bus eventbus.EventBus, closers []io.Closer) (*ingestion.Processor, []io.Closer, error) {
 	// Open checkpoint storage first. MySQL guards are the durable duplicate
-	// boundary between at-least-once Redis delivery and ClickHouse appends.
+	// boundary between at-least-once queue delivery and ClickHouse appends.
 	mysqlDB, mysqlCloser, err := openMySQL(ctx, cfg.MySQLDSN)
 	if err != nil {
 		return nil, closers, err
@@ -113,8 +113,8 @@ func newEventWriter(ctx context.Context, cfg config.Config, mysqlDB *gorm.DB, cl
 			}
 		} else if propertyCatalogingRequiresExistingTable(cfg) {
 			// Default cataloging must fail during startup when operators have not
-			// initialized the metadata table. Failing here prevents Redis messages
-			// from being accepted and repeatedly nacked by a missing MySQL table.
+			// initialized the metadata table. Failing here prevents queue messages
+			// from being accepted and repeatedly retried by a missing MySQL table.
 			if err := requireMySQLTable(mysqlDB.WithContext(ctx).Migrator(), &mysql.PropertyCatalogEntry{}, "property_catalog"); err != nil {
 				return nil, err
 			}
@@ -205,7 +205,7 @@ func createClickHouseTables(ctx context.Context, cfg config.Config, conn clickHo
 
 func validateClickHouseTables(ctx context.Context, cfg config.Config, conn clickHouseTableQuerier, router *clickhouse.TableRouter) error {
 	// Ingestion must fail closed when storage schema is missing. Otherwise
-	// /collect can return 202 while Redis messages are repeatedly nacked and
+	// /collect can return 202 while queue messages are repeatedly retried and
 	// eventually dead-lettered because ClickHouse tables were never created.
 	for _, source := range cfg.Sources {
 		source = source.Normalize()
@@ -303,7 +303,7 @@ func openClickHouseNative(ctx context.Context, cfg config.Config) (driver.Conn, 
 		return nil, err
 	}
 	// Ping before returning so missing credentials or half-ready ClickHouse
-	// startup states fail before Redis consumers can receive events.
+	// startup states fail before queue consumers can receive events.
 	if err := conn.Ping(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err

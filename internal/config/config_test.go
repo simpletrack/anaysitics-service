@@ -30,6 +30,46 @@ func TestLoadFromEnvAllowsExplicitInMemoryMode(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRequiresKafkaBrokers(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected kafka event bus without brokers to fail")
+	}
+}
+
+func TestLoadFromEnvReadsKafkaOptions(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092, 127.0.0.1:39092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TOPIC", "custom.events")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_DEAD_LETTER_TOPIC", "custom.events.dead")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_CLIENT_ID", "analytics-service-test")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_MAX_ATTEMPTS", "7")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_RETRY_BACKOFF", "750ms")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_WORKERS", "32")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_QUEUE_SIZE", "96")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_COMMIT_INTERVAL", "2s")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected kafka config to load: %v", err)
+	}
+	if !slices.Equal(cfg.KafkaBrokers, []string{"127.0.0.1:29092", "127.0.0.1:39092"}) {
+		t.Fatalf("unexpected kafka brokers %#v", cfg.KafkaBrokers)
+	}
+	if cfg.KafkaTopic != "custom.events" || cfg.KafkaDeadLetterTopic != "custom.events.dead" {
+		t.Fatalf("unexpected kafka topics %q / %q", cfg.KafkaTopic, cfg.KafkaDeadLetterTopic)
+	}
+	if cfg.KafkaClientID != "analytics-service-test" || cfg.KafkaMaxAttempts != 7 {
+		t.Fatalf("unexpected kafka identity or attempts: %#v", cfg)
+	}
+	if cfg.KafkaRetryBackoff != 750*time.Millisecond || cfg.KafkaWorkers != 32 || cfg.KafkaQueueSize != 96 || cfg.KafkaCommitInterval != 2*time.Second {
+		t.Fatalf("unexpected kafka runtime tuning: %#v", cfg)
+	}
+}
+
 func TestLoadFromEnvRequiresStorageWhenIngestionIsEnabled(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_REDIS_ADDR", "127.0.0.1:26379")
 	t.Setenv("ANALYTICS_SERVICE_INGESTION_ENABLED", "true")
@@ -63,6 +103,41 @@ func TestLoadFromEnvAcceptsIngestionStorageConfig(t *testing.T) {
 	}
 	if !cfg.PropertyCataloging {
 		t.Fatalf("expected property cataloging to be enabled by default")
+	}
+}
+
+func TestLoadFromEnvAcceptsKafkaIngestionStorageConfig(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_INGESTION_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/analytics?parseTime=true")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_WORKER_CONSUMER", "consumer-test")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected kafka ingestion config to load: %v", err)
+	}
+	if cfg.EventBus != "kafka" || !cfg.IngestionEnabled {
+		t.Fatalf("expected kafka ingestion, got eventbus=%q ingestion=%v", cfg.EventBus, cfg.IngestionEnabled)
+	}
+	if cfg.KafkaTopic != "analytics.events" || cfg.KafkaDeadLetterTopic != "analytics.events.dead" {
+		t.Fatalf("unexpected kafka default topics %q / %q", cfg.KafkaTopic, cfg.KafkaDeadLetterTopic)
+	}
+}
+
+func TestLoadFromEnvRejectsDirectIngestion(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_INGESTION_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/analytics?parseTime=true")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_WORKER_CONSUMER", "consumer-test")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected direct ingestion to fail")
 	}
 }
 

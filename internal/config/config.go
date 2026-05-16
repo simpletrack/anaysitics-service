@@ -26,6 +26,9 @@ const (
 	defaultEventBus       = "redis"
 	defaultRedisStream    = "analytics.events"
 	defaultDeadLetters    = "analytics.events.dead"
+	defaultKafkaTopic     = "analytics.events"
+	defaultKafkaDeadTopic = "analytics.events.dead"
+	defaultKafkaClientID  = "simpletrack-anaysitics-service"
 	defaultWorkerGroup    = "simpletrack-anaysitics-service"
 	defaultTablePrefix    = "events"
 	defaultResolver       = "memory"
@@ -57,7 +60,7 @@ type Config struct {
 	TrackerFile                       string                      // TrackerFile is the local JavaScript asset path
 	TrustForwardedHeaders             bool                        // TrustForwardedHeaders enables proxy-provided client IP headers
 	GeoIPMMDBFile                     string                      // GeoIPMMDBFile enables offline MaxMind-compatible geo enrichment when set
-	EventBus                          string                      // EventBus selects the runtime queue backend, usually redis
+	EventBus                          string                      // EventBus selects redis, kafka, or explicitly allowed direct mode
 	AllowInMemoryBus                  bool                        // AllowInMemoryBus explicitly permits non-durable demo mode
 	RedisAddr                         string                      // RedisAddr is the Redis server address used for durable event enqueueing
 	RedisPassword                     string                      // RedisPassword is the optional Redis password
@@ -67,8 +70,17 @@ type Config struct {
 	RedisBlock                        time.Duration               // RedisBlock is the blocking read duration for future workers
 	RedisReadCount                    int64                       // RedisReadCount is the maximum messages read per poll
 	RedisMaxAttempts                  int                         // RedisMaxAttempts is the dead-letter threshold for future workers
-	IngestionEnabled                  bool                        // IngestionEnabled starts the runtime Redis-to-storage worker
-	WorkerGroup                       string                      // WorkerGroup is the Redis Stream consumer group for ingestion
+	KafkaBrokers                      []string                    // KafkaBrokers are bootstrap brokers for the production EventBus provider
+	KafkaTopic                        string                      // KafkaTopic receives accepted analytics event envelopes
+	KafkaDeadLetterTopic              string                      // KafkaDeadLetterTopic receives malformed or exhausted Kafka messages
+	KafkaClientID                     string                      // KafkaClientID identifies this service instance family to Kafka
+	KafkaMaxAttempts                  int                         // KafkaMaxAttempts is the handler attempt limit before Kafka DLQ
+	KafkaRetryBackoff                 time.Duration               // KafkaRetryBackoff spaces Kafka handler and DLQ retries
+	KafkaWorkers                      int                         // KafkaWorkers is the fixed Kafka handler worker count
+	KafkaQueueSize                    int                         // KafkaQueueSize is the bounded Kafka handler work queue size
+	KafkaCommitInterval               time.Duration               // KafkaCommitInterval controls Sarama offset commit cadence
+	IngestionEnabled                  bool                        // IngestionEnabled starts the runtime queue-to-storage worker
+	WorkerGroup                       string                      // WorkerGroup is the durable queue consumer group for ingestion
 	WorkerConsumer                    string                      // WorkerConsumer is the concrete consumer name for this process
 	MySQLDSN                          string                      // MySQLDSN stores ingestion idempotency checkpoints
 	MySQLAutoMigrate                  bool                        // MySQLAutoMigrate creates checkpoint tables at startup when enabled
@@ -125,6 +137,15 @@ func LoadFromEnv() (Config, error) {
 		RedisBlock:                        envDuration("ANALYTICS_SERVICE_REDIS_BLOCK", time.Second),
 		RedisReadCount:                    int64(envInt("ANALYTICS_SERVICE_REDIS_READ_COUNT", 10)),
 		RedisMaxAttempts:                  envInt("ANALYTICS_SERVICE_REDIS_MAX_ATTEMPTS", 5),
+		KafkaBrokers:                      parseCSV(envString("ANALYTICS_SERVICE_KAFKA_BROKERS", "")),
+		KafkaTopic:                        envString("ANALYTICS_SERVICE_KAFKA_TOPIC", defaultKafkaTopic),
+		KafkaDeadLetterTopic:              envString("ANALYTICS_SERVICE_KAFKA_DEAD_LETTER_TOPIC", defaultKafkaDeadTopic),
+		KafkaClientID:                     envString("ANALYTICS_SERVICE_KAFKA_CLIENT_ID", defaultKafkaClientID),
+		KafkaMaxAttempts:                  envInt("ANALYTICS_SERVICE_KAFKA_MAX_ATTEMPTS", 5),
+		KafkaRetryBackoff:                 envDuration("ANALYTICS_SERVICE_KAFKA_RETRY_BACKOFF", 250*time.Millisecond),
+		KafkaWorkers:                      envInt("ANALYTICS_SERVICE_KAFKA_WORKERS", 100),
+		KafkaQueueSize:                    envInt("ANALYTICS_SERVICE_KAFKA_QUEUE_SIZE", 200),
+		KafkaCommitInterval:               envDuration("ANALYTICS_SERVICE_KAFKA_COMMIT_INTERVAL", time.Second),
 		IngestionEnabled:                  envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
 		WorkerGroup:                       envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
 		WorkerConsumer:                    envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
@@ -159,11 +180,14 @@ func LoadFromEnv() (Config, error) {
 	if config.EventBus == "redis" && config.RedisAddr == "" {
 		return Config{}, errors.New("ANALYTICS_SERVICE_REDIS_ADDR is required when ANALYTICS_SERVICE_EVENTBUS=redis")
 	}
+	if config.EventBus == "kafka" && len(config.KafkaBrokers) == 0 {
+		return Config{}, errors.New("ANALYTICS_SERVICE_KAFKA_BROKERS is required when ANALYTICS_SERVICE_EVENTBUS=kafka")
+	}
 	if config.EventBus == "direct" && !config.AllowInMemoryBus {
 		return Config{}, errors.New("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS=true is required for direct event bus mode")
 	}
-	if config.EventBus != "redis" && config.EventBus != "direct" {
-		return Config{}, errors.New("ANALYTICS_SERVICE_EVENTBUS must be redis or direct")
+	if config.EventBus != "redis" && config.EventBus != "kafka" && config.EventBus != "direct" {
+		return Config{}, errors.New("ANALYTICS_SERVICE_EVENTBUS must be redis, kafka, or direct")
 	}
 	if config.SourceResolver != "memory" && config.SourceResolver != "http" {
 		return Config{}, errors.New("ANALYTICS_SERVICE_SOURCE_RESOLVER must be memory or http")
@@ -185,8 +209,8 @@ func LoadFromEnv() (Config, error) {
 		}
 	}
 	if config.IngestionEnabled {
-		if config.EventBus != "redis" {
-			return Config{}, errors.New("ANALYTICS_SERVICE_INGESTION_ENABLED requires ANALYTICS_SERVICE_EVENTBUS=redis")
+		if config.EventBus == "direct" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_INGESTION_ENABLED requires ANALYTICS_SERVICE_EVENTBUS=redis or kafka")
 		}
 		if config.WorkerGroup == "" {
 			return Config{}, errors.New("ANALYTICS_SERVICE_WORKER_GROUP is required when ingestion is enabled")

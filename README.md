@@ -20,7 +20,7 @@ runtime view of that configuration, enforces it on hot-path requests, and calls
 - Override untrusted client-supplied tenant, project, source, and source type.
 - Enforce source enabled state and origin allowlists before analytics-core sees the event.
 - Apply analytics-core collect stages for bot filtering, internal traffic filtering, client enrichment, and session derivation.
-- Optionally run the Redis Stream ingestion worker that writes accepted events to ClickHouse through `analytics-core`.
+- Optionally run the queue ingestion worker that writes accepted events to ClickHouse through `analytics-core`.
 
 ## Non-Responsibilities
 
@@ -179,8 +179,19 @@ be limited to a subset of runtime sources. This lets deployments keep separate
 readback tokens per route family and per source without changing the control
 plane or browser-visible URLs.
 
-By default the service only accepts `/collect` and durably enqueues events to Redis.
-To run ingestion in the same process for local or small deployments, opt in:
+By default the service only accepts `/collect` and durably enqueues events to Redis for local convenience. Production deployments should use Kafka as the primary EventBus provider:
+
+```powershell
+$env:ANALYTICS_SERVICE_EVENTBUS='kafka'
+$env:ANALYTICS_SERVICE_KAFKA_BROKERS='127.0.0.1:29092'
+$env:ANALYTICS_SERVICE_KAFKA_TOPIC='analytics.events'
+$env:ANALYTICS_SERVICE_KAFKA_DEAD_LETTER_TOPIC='analytics.events.dead'
+$env:ANALYTICS_SERVICE_KAFKA_MAX_ATTEMPTS='5'
+$env:ANALYTICS_SERVICE_KAFKA_RETRY_BACKOFF='250ms'
+$env:ANALYTICS_SERVICE_KAFKA_WORKERS='100'
+```
+
+Redis Stream remains suitable for local, small-volume, and test deployments. To run ingestion in the same process for local or small deployments, opt in:
 
 ```powershell
 $env:ANALYTICS_SERVICE_INGESTION_ENABLED='true'
@@ -207,21 +218,21 @@ $env:ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE='true'
 This switch creates the per-source event table and matching `_properties` table
 for every enabled source in the current runtime config. Production deployments
 should leave it off until schema review, migration ordering, and rollback
-procedures are owned by the deployment pipeline. The runtime worker wires Redis
-Stream, MySQL checkpoint guards, ClickHouse native batch writers, and typed
-property indexing. It also records observed event and user property selectors in
+procedures are owned by the deployment pipeline. The runtime worker wires the
+configured EventBus, MySQL checkpoint guards, ClickHouse native batch writers,
+and typed property indexing. It also records observed event and user property selectors in
 the MySQL `property_catalog` table by default. That catalog is metadata
 governance for UI filter suggestions and future allowlists; it does not replace
 the ClickHouse `_properties` table used for typed property filtering. When
 `ANALYTICS_SERVICE_MYSQL_AUTO_MIGRATE=false`, startup now requires the table to
-already exist so a missing metadata table fails before Redis consumers can nack
-accepted messages repeatedly. Disable cataloging only for narrow diagnostics:
+already exist so a missing metadata table fails before queue consumers repeatedly
+retry accepted messages. Disable cataloging only for narrow diagnostics:
 
 ```powershell
 $env:ANALYTICS_SERVICE_PROPERTY_CATALOGING='false'
 ```
 
-For a throwaway demo without Redis, opt into the non-durable in-memory queue:
+For a throwaway demo without Redis or Kafka, opt into the non-durable in-memory queue:
 
 ```powershell
 $env:ANALYTICS_SERVICE_EVENTBUS='direct'
