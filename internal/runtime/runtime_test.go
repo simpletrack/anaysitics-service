@@ -2,12 +2,19 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/config"
@@ -47,6 +54,49 @@ func TestNewSourceResolverBindsHTTPResolverToIngestionSchemaSurface(t *testing.T
 	_, err = resolver.ResolveSource(context.Background(), startup.WriteKey)
 	if !errors.Is(err, controlplane.ErrSourceOutsideSchemaSurface) {
 		t.Fatalf("expected schema surface rejection, got %v", err)
+	}
+}
+
+func TestNewKafkaTLSConfigUsesCAAndServerName(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, []byte(testCertificatePEM(t)), 0o600); err != nil {
+		t.Fatalf("write ca file failed: %v", err)
+	}
+
+	tlsConfig, err := newKafkaTLSConfig(config.Config{
+		KafkaTLSEnabled:            true,
+		KafkaTLSServerName:         "kafka.example.com",
+		KafkaTLSCAFile:             caFile,
+		KafkaTLSInsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("new kafka TLS config failed: %v", err)
+	}
+	if tlsConfig == nil || tlsConfig.ServerName != "kafka.example.com" || tlsConfig.RootCAs == nil {
+		t.Fatalf("unexpected TLS config: %#v", tlsConfig)
+	}
+	if !tlsConfig.InsecureSkipVerify {
+		t.Fatal("expected insecure skip verify test knob to be mapped")
+	}
+}
+
+func TestNewKafkaTLSConfigRejectsInvalidCAFile(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "broken-ca.pem")
+	if err := os.WriteFile(caFile, []byte("not pem"), 0o600); err != nil {
+		t.Fatalf("write ca file failed: %v", err)
+	}
+
+	_, err := newKafkaTLSConfig(config.Config{KafkaTLSEnabled: true, KafkaTLSCAFile: caFile})
+	if err == nil {
+		t.Fatal("expected invalid Kafka TLS CA file to fail")
+	}
+}
+
+func TestKafkaEventBusStatsReturnsFalseWithoutKafka(t *testing.T) {
+	runtime := &Runtime{}
+
+	if stats, ok := runtime.KafkaEventBusStats(); ok || stats.Topic != "" {
+		t.Fatalf("unexpected Kafka stats for non-Kafka runtime: ok=%v stats=%#v", ok, stats)
 	}
 }
 
@@ -99,4 +149,25 @@ func assertHasSelector(t *testing.T, selectors []storage.PropertySelector, want 
 		}
 	}
 	t.Fatalf("expected selector %#v in %#v", want, selectors)
+}
+
+func testCertificatePEM(t *testing.T) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate certificate key failed: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IsCA:         true,
+		KeyUsage:     x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate failed: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }

@@ -79,6 +79,17 @@ type Config struct {
 	KafkaWorkers                      int                         // KafkaWorkers is the fixed Kafka handler worker count
 	KafkaQueueSize                    int                         // KafkaQueueSize is the bounded Kafka handler work queue size
 	KafkaCommitInterval               time.Duration               // KafkaCommitInterval controls Sarama offset commit cadence
+	KafkaTLSEnabled                   bool                        // KafkaTLSEnabled turns on TLS for Kafka broker connections
+	KafkaTLSServerName                string                      // KafkaTLSServerName overrides the broker certificate server name
+	KafkaTLSCAFile                    string                      // KafkaTLSCAFile is an optional PEM CA bundle for broker trust
+	KafkaTLSCertFile                  string                      // KafkaTLSCertFile is an optional client certificate PEM path
+	KafkaTLSKeyFile                   string                      // KafkaTLSKeyFile is the private key path for KafkaTLSCertFile
+	KafkaTLSInsecureSkipVerify        bool                        // KafkaTLSInsecureSkipVerify disables broker certificate verification for controlled tests
+	KafkaSASLEnabled                  bool                        // KafkaSASLEnabled turns on Kafka broker authentication
+	KafkaSASLMechanism                string                      // KafkaSASLMechanism selects the supported SASL mechanism
+	KafkaSASLUsername                 string                      // KafkaSASLUsername is the broker authentication identity
+	KafkaSASLPassword                 string                      // KafkaSASLPassword is the broker authentication secret
+	KafkaSASLHandshake                bool                        // KafkaSASLHandshake controls the Kafka SASL pre-auth handshake
 	IngestionEnabled                  bool                        // IngestionEnabled starts the runtime queue-to-storage worker
 	WorkerGroup                       string                      // WorkerGroup is the durable queue consumer group for ingestion
 	WorkerConsumer                    string                      // WorkerConsumer is the concrete consumer name for this process
@@ -146,6 +157,17 @@ func LoadFromEnv() (Config, error) {
 		KafkaWorkers:                      envInt("ANALYTICS_SERVICE_KAFKA_WORKERS", 100),
 		KafkaQueueSize:                    envInt("ANALYTICS_SERVICE_KAFKA_QUEUE_SIZE", 200),
 		KafkaCommitInterval:               envDuration("ANALYTICS_SERVICE_KAFKA_COMMIT_INTERVAL", time.Second),
+		KafkaTLSEnabled:                   envBool("ANALYTICS_SERVICE_KAFKA_TLS_ENABLED", false),
+		KafkaTLSServerName:                envString("ANALYTICS_SERVICE_KAFKA_TLS_SERVER_NAME", ""),
+		KafkaTLSCAFile:                    envString("ANALYTICS_SERVICE_KAFKA_TLS_CA_FILE", ""),
+		KafkaTLSCertFile:                  envString("ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE", ""),
+		KafkaTLSKeyFile:                   envString("ANALYTICS_SERVICE_KAFKA_TLS_KEY_FILE", ""),
+		KafkaTLSInsecureSkipVerify:        envBool("ANALYTICS_SERVICE_KAFKA_TLS_INSECURE_SKIP_VERIFY", false),
+		KafkaSASLEnabled:                  envBool("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED", false),
+		KafkaSASLMechanism:                strings.ToLower(envString("ANALYTICS_SERVICE_KAFKA_SASL_MECHANISM", "plain")),
+		KafkaSASLUsername:                 envString("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", ""),
+		KafkaSASLPassword:                 envString("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", ""),
+		KafkaSASLHandshake:                envBool("ANALYTICS_SERVICE_KAFKA_SASL_HANDSHAKE", true),
 		IngestionEnabled:                  envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
 		WorkerGroup:                       envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
 		WorkerConsumer:                    envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
@@ -182,6 +204,11 @@ func LoadFromEnv() (Config, error) {
 	}
 	if config.EventBus == "kafka" && len(config.KafkaBrokers) == 0 {
 		return Config{}, errors.New("ANALYTICS_SERVICE_KAFKA_BROKERS is required when ANALYTICS_SERVICE_EVENTBUS=kafka")
+	}
+	if config.EventBus == "kafka" {
+		if err := validateKafkaSecurityConfig(config); err != nil {
+			return Config{}, err
+		}
 	}
 	if config.EventBus == "direct" && !config.AllowInMemoryBus {
 		return Config{}, errors.New("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS=true is required for direct event bus mode")
@@ -241,6 +268,61 @@ func LoadFromEnv() (Config, error) {
 		return Config{}, errors.New("ANALYTICS_SERVICE_SOURCES_JSON is required when ingestion is enabled")
 	}
 	return config, nil
+}
+
+func validateKafkaSecurityConfig(config Config) error {
+	// Validate deployment credentials before runtime assembly opens broker
+	// connections, so operator mistakes produce env-focused startup errors.
+	if !config.KafkaTLSEnabled && hasKafkaTLSMaterial(config) {
+		return errors.New("ANALYTICS_SERVICE_KAFKA_TLS_ENABLED=true is required when Kafka TLS settings are provided")
+	}
+	if config.KafkaTLSCertFile != "" && config.KafkaTLSKeyFile == "" {
+		return errors.New("ANALYTICS_SERVICE_KAFKA_TLS_KEY_FILE is required when ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE is set")
+	}
+	if config.KafkaTLSKeyFile != "" && config.KafkaTLSCertFile == "" {
+		return errors.New("ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE is required when ANALYTICS_SERVICE_KAFKA_TLS_KEY_FILE is set")
+	}
+	if !config.KafkaSASLEnabled && hasKafkaSASLMaterial(config) {
+		return errors.New("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED=true is required when Kafka SASL settings are provided")
+	}
+	if config.KafkaSASLEnabled {
+		if isUnsupportedKafkaSASLMechanism(config.KafkaSASLMechanism) {
+			return errors.New("ANALYTICS_SERVICE_KAFKA_SASL_MECHANISM must be plain in this version")
+		}
+		if strings.TrimSpace(config.KafkaSASLUsername) == "" {
+			return errors.New("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME is required when Kafka SASL is enabled")
+		}
+		if config.KafkaSASLPassword == "" {
+			return errors.New("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD is required when Kafka SASL is enabled")
+		}
+	}
+	return nil
+}
+
+func hasKafkaTLSMaterial(config Config) bool {
+	return strings.TrimSpace(config.KafkaTLSServerName) != "" ||
+		strings.TrimSpace(config.KafkaTLSCAFile) != "" ||
+		strings.TrimSpace(config.KafkaTLSCertFile) != "" ||
+		strings.TrimSpace(config.KafkaTLSKeyFile) != "" ||
+		config.KafkaTLSInsecureSkipVerify
+}
+
+func hasKafkaSASLMaterial(config Config) bool {
+	return isUnsupportedKafkaSASLMechanism(config.KafkaSASLMechanism) ||
+		strings.TrimSpace(config.KafkaSASLUsername) != "" ||
+		config.KafkaSASLPassword != ""
+}
+
+func isUnsupportedKafkaSASLMechanism(mechanism string) bool {
+	// Mechanism alias normalization is owned by analytics-core's Kafka provider;
+	// the service only rejects values that are definitely outside the first
+	// supported mechanism family before opening broker connections.
+	switch strings.ToLower(strings.TrimSpace(mechanism)) {
+	case "", "plain", "plaintext", "sasl_plaintext":
+		return false
+	default:
+		return true
+	}
 }
 
 func envString(name string, fallback string) string {

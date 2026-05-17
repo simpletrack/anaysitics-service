@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/redis/go-redis/v9"
 	"github.com/simpletrack/analytics-core/eventbus"
+	kafkaeventbus "github.com/simpletrack/analytics-core/eventbus/kafka"
 	"github.com/simpletrack/analytics-core/eventbus/redisstream"
 	"github.com/simpletrack/analytics-core/ingestion"
 	"github.com/simpletrack/analytics-core/storage"
@@ -27,6 +28,7 @@ import (
 type Runtime struct {
 	app       *fiber.App           // app serves health, tracker, collect, query, and documentation routes
 	processor *ingestion.Processor // processor consumes configured queue messages when ingestion is enabled
+	kafkaBus  *kafkaeventbus.Bus   // kafkaBus exposes provider diagnostics when Kafka is configured
 	closers   []io.Closer          // closers release network clients opened by the runtime assembly
 	worker    chan error           // worker receives the optional ingestion worker terminal error
 }
@@ -131,6 +133,7 @@ func New(cfg config.Config) (*Runtime, error) {
 	return &Runtime{
 		app:       app,
 		processor: processor,
+		kafkaBus:  kafkaBusFromEventBus(bus),
 		closers:   closers,
 	}, nil
 }
@@ -204,6 +207,14 @@ func (r *Runtime) WorkerDone() <-chan error {
 	return r.worker
 }
 
+// KafkaEventBusStats returns Kafka provider diagnostics when Kafka is configured.
+func (r *Runtime) KafkaEventBusStats() (kafkaeventbus.Stats, bool) {
+	if r == nil || r.kafkaBus == nil {
+		return kafkaeventbus.Stats{}, false
+	}
+	return r.kafkaBus.Stats(), true
+}
+
 // Close releases network resources opened during runtime assembly.
 func (r *Runtime) Close() error {
 	if r == nil {
@@ -223,6 +234,12 @@ func newEventBus(cfg config.Config) (eventbus.EventBus, []io.Closer, error) {
 	default:
 		return nil, nil, configError("unsupported event bus")
 	}
+}
+
+// kafkaBusFromEventBus narrows the durable bus to the Kafka diagnostic surface.
+func kafkaBusFromEventBus(bus eventbus.EventBus) *kafkaeventbus.Bus {
+	kafkaBus, _ := bus.(*kafkaeventbus.Bus)
+	return kafkaBus
 }
 
 func newQueryReader(cfg config.Config) (storage.EventReader, []io.Closer, error) {

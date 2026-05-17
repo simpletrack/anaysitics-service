@@ -50,6 +50,16 @@ func TestLoadFromEnvReadsKafkaOptions(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_KAFKA_WORKERS", "32")
 	t.Setenv("ANALYTICS_SERVICE_KAFKA_QUEUE_SIZE", "96")
 	t.Setenv("ANALYTICS_SERVICE_KAFKA_COMMIT_INTERVAL", "2s")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_SERVER_NAME", "kafka.example.com")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_CA_FILE", "C:/certs/ca.pem")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE", "C:/certs/client.pem")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_KEY_FILE", "C:/certs/client-key.pem")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_MECHANISM", "plain")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", "eventbus-user")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", "eventbus-password")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_HANDSHAKE", "false")
 	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
 
 	cfg, err := LoadFromEnv()
@@ -67,6 +77,79 @@ func TestLoadFromEnvReadsKafkaOptions(t *testing.T) {
 	}
 	if cfg.KafkaRetryBackoff != 750*time.Millisecond || cfg.KafkaWorkers != 32 || cfg.KafkaQueueSize != 96 || cfg.KafkaCommitInterval != 2*time.Second {
 		t.Fatalf("unexpected kafka runtime tuning: %#v", cfg)
+	}
+	if !cfg.KafkaTLSEnabled || cfg.KafkaTLSServerName != "kafka.example.com" || cfg.KafkaTLSCAFile != "C:/certs/ca.pem" {
+		t.Fatalf("unexpected kafka TLS config: %#v", cfg)
+	}
+	if cfg.KafkaTLSCertFile != "C:/certs/client.pem" || cfg.KafkaTLSKeyFile != "C:/certs/client-key.pem" {
+		t.Fatalf("unexpected kafka mTLS paths: %#v", cfg)
+	}
+	if !cfg.KafkaSASLEnabled || cfg.KafkaSASLMechanism != "plain" || cfg.KafkaSASLUsername != "eventbus-user" || cfg.KafkaSASLPassword != "eventbus-password" {
+		t.Fatalf("unexpected kafka SASL config: %#v", cfg)
+	}
+	if cfg.KafkaSASLHandshake {
+		t.Fatal("expected Kafka SASL handshake override to be false")
+	}
+}
+
+func TestLoadFromEnvRejectsUnsupportedKafkaSASLMechanism(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_MECHANISM", "scram-sha-256")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", "eventbus-user")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", "eventbus-password")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected unsupported Kafka SASL mechanism to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaSASLWithoutCredentials(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", "eventbus-user")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected Kafka SASL without password to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaSASLMaterialWithoutEnableFlag(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", "eventbus-user")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", "eventbus-password")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected Kafka SASL material without enable flag to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaTLSCertificateWithoutKey(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE", "C:/certs/client.pem")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected Kafka TLS certificate without key to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaTLSMaterialWithoutEnableFlag(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_TLS_CA_FILE", "C:/certs/ca.pem")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected Kafka TLS material without enable flag to fail")
 	}
 }
 
