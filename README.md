@@ -191,6 +191,27 @@ $env:ANALYTICS_SERVICE_KAFKA_RETRY_BACKOFF='250ms'
 $env:ANALYTICS_SERVICE_KAFKA_WORKERS='100'
 ```
 
+Kafka deployments can expose a default-disabled internal diagnostics route for
+operators. It reuses the same bearer query-token lifecycle as readback routes,
+but it is process-scoped and does not require `write_key` because it does not
+read source data. Use a dedicated `kafka_diagnostics` token scope when possible:
+
+```powershell
+$env:ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED='true'
+$env:ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_PATH='/v1/kafka/diagnostics'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN='kafka-diagnostics-token'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES='kafka_diagnostics'
+
+Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8080/v1/kafka/diagnostics' `
+  -Headers @{ Authorization = "Bearer kafka-diagnostics-token" }
+```
+
+The response includes worker queue pressure, completion-gate pressure, retry and
+DLQ counters, pause/resume counters, paused partitions, ordered commit
+`next_offset`, and `lag_estimate`. Treat it as a local diagnostic snapshot, not
+as authoritative broker lag, billing evidence, or an SLA metric. Broker secrets,
+TLS/SASL material, and raw event payloads are intentionally not returned.
+
 Redis Stream remains suitable for local, small-volume, and test deployments. To run ingestion in the same process for local or small deployments, opt in:
 
 ```powershell

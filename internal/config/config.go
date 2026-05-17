@@ -20,6 +20,7 @@ const (
 	defaultGoalsPath      = "/v1/goals"
 	defaultRealtimePath   = "/v1/realtime"
 	defaultPropertiesPath = "/v1/properties"
+	defaultKafkaDiagPath  = "/v1/kafka/diagnostics"
 	defaultSwaggerPath    = "/swagger"
 	defaultOpenAPIFile    = "api/openapi.yaml"
 	defaultTrackerFile    = "public/tracker.js"
@@ -90,6 +91,8 @@ type Config struct {
 	KafkaSASLUsername                 string                      // KafkaSASLUsername is the broker authentication identity
 	KafkaSASLPassword                 string                      // KafkaSASLPassword is the broker authentication secret
 	KafkaSASLHandshake                bool                        // KafkaSASLHandshake controls the Kafka SASL pre-auth handshake
+	KafkaDiagnosticsEnabled           bool                        // KafkaDiagnosticsEnabled exposes process-local Kafka provider diagnostics
+	KafkaDiagnosticsPath              string                      // KafkaDiagnosticsPath is the internal Kafka diagnostics readback route
 	IngestionEnabled                  bool                        // IngestionEnabled starts the runtime queue-to-storage worker
 	WorkerGroup                       string                      // WorkerGroup is the durable queue consumer group for ingestion
 	WorkerConsumer                    string                      // WorkerConsumer is the concrete consumer name for this process
@@ -168,6 +171,8 @@ func LoadFromEnv() (Config, error) {
 		KafkaSASLUsername:                 envString("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", ""),
 		KafkaSASLPassword:                 envString("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", ""),
 		KafkaSASLHandshake:                envBool("ANALYTICS_SERVICE_KAFKA_SASL_HANDSHAKE", true),
+		KafkaDiagnosticsEnabled:           envBool("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", false),
+		KafkaDiagnosticsPath:              envString("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_PATH", defaultKafkaDiagPath),
 		IngestionEnabled:                  envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
 		WorkerGroup:                       envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
 		WorkerConsumer:                    envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
@@ -215,6 +220,14 @@ func LoadFromEnv() (Config, error) {
 	}
 	if config.EventBus != "redis" && config.EventBus != "kafka" && config.EventBus != "direct" {
 		return Config{}, errors.New("ANALYTICS_SERVICE_EVENTBUS must be redis, kafka, or direct")
+	}
+	if config.KafkaDiagnosticsEnabled {
+		if config.EventBus != "kafka" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED requires ANALYTICS_SERVICE_EVENTBUS=kafka")
+		}
+		if len(config.QueryCredentials) == 0 {
+			return Config{}, errors.New("ANALYTICS_SERVICE_QUERY_TOKEN or ANALYTICS_SERVICE_QUERY_TOKENS_JSON is required when ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED=true")
+		}
 	}
 	if config.SourceResolver != "memory" && config.SourceResolver != "http" {
 		return Config{}, errors.New("ANALYTICS_SERVICE_SOURCE_RESOLVER must be memory or http")
@@ -507,8 +520,10 @@ func parseQueryTokenScope(raw string) (controlplane.ReadbackRoute, error) {
 		return controlplane.ReadbackRouteProperties, nil
 	case controlplane.ReadbackRouteGoals:
 		return controlplane.ReadbackRouteGoals, nil
+	case controlplane.ReadbackRouteKafkaDiagnostics:
+		return controlplane.ReadbackRouteKafkaDiagnostics, nil
 	default:
-		return "", errors.New("query token scope must be one of realtime, events, properties, goals")
+		return "", errors.New("query token scope must be one of realtime, events, properties, goals, kafka_diagnostics")
 	}
 }
 

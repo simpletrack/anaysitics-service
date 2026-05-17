@@ -1653,6 +1653,126 @@ func TestQueryRoutesUseConfiguredPaths(t *testing.T) {
 	}
 }
 
+func TestKafkaDiagnosticsDisabledByDefault(t *testing.T) {
+	app, _ := newTestHandler(t, testSourceConfig(), false)
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusNotFound {
+		t.Fatalf("expected disabled kafka diagnostics route to be hidden, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+func TestKafkaDiagnosticsRequiresBearerTokenAndScope(t *testing.T) {
+	app := newTestKafkaDiagnosticsHandler(t, []QueryCredential{
+		{ID: "events", Token: "events-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteEvents}},
+		{ID: "diagnostics", Token: "diagnostics-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaDiagnostics}},
+	}, sampleKafkaDiagnosticsResponse())
+
+	missing := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics", "", nil)
+	if missing.Response.StatusCode() != fiber.StatusUnauthorized {
+		t.Fatalf("expected missing token rejection, got %d: %s", missing.Response.StatusCode(), missing.Response.Body())
+	}
+
+	outOfScope := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics", "", map[string]string{
+		"Authorization": "Bearer events-token",
+	})
+	if outOfScope.Response.StatusCode() != fiber.StatusForbidden {
+		t.Fatalf("expected scope rejection, got %d: %s", outOfScope.Response.StatusCode(), outOfScope.Response.Body())
+	}
+
+	allowed := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics", "", map[string]string{
+		"Authorization": "Bearer diagnostics-token",
+	})
+	if allowed.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected diagnostics response, got %d: %s", allowed.Response.StatusCode(), allowed.Response.Body())
+	}
+}
+
+func TestKafkaDiagnosticsReturnsProcessSnapshotWithoutSourceResolution(t *testing.T) {
+	resolver := &countingResolver{source: testSourceConfig()}
+	app := newTestKafkaDiagnosticsHandlerWithResolver(t, resolver, []QueryCredential{
+		{ID: "diagnostics", Token: "diagnostics-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaDiagnostics}},
+	}, sampleKafkaDiagnosticsResponse())
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics", "", map[string]string{
+		"Authorization": "Bearer diagnostics-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected diagnostics response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("kafka diagnostics should not resolve a source, got %d resolver calls", resolver.calls)
+	}
+	var response KafkaDiagnosticsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
+		t.Fatalf("decode diagnostics response failed: %v", err)
+	}
+	if response.Topic != "analytics.events" || response.DeadLetterTopic != "analytics.events.dead" {
+		t.Fatalf("unexpected diagnostics topics: %#v", response)
+	}
+	if response.WorkerPool.QueueUsageRatio != 0.5 || response.WorkerPool.Queued != 10 || response.WorkerPool.QueueCapacity != 20 {
+		t.Fatalf("unexpected worker pool snapshot: %#v", response.WorkerPool)
+	}
+	if len(response.Commits) != 1 || response.Commits[0].NextOffset != 10 || response.Commits[0].LagEstimate != 7 {
+		t.Fatalf("unexpected ordered commit snapshot: %#v", response.Commits)
+	}
+	if response.Metrics.DeadLetterFailureTotal != 1 || response.Metrics.HandlerRetryTotal != 3 || response.Metrics.PauseTransitionsTotal != 2 {
+		t.Fatalf("unexpected kafka metrics snapshot: %#v", response.Metrics)
+	}
+	if got := response.Paused["analytics.events"]; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("unexpected paused partitions: %#v", response.Paused)
+	}
+	if strings.Contains(string(ctx.Response.Body()), "broker") || strings.Contains(string(ctx.Response.Body()), "payload") {
+		t.Fatalf("diagnostics response should not expose broker secrets or payloads: %s", ctx.Response.Body())
+	}
+}
+
+func TestKafkaDiagnosticsIgnoresWriteKeyAllowlist(t *testing.T) {
+	resolver := &countingResolver{source: testSourceConfig()}
+	app := newTestKafkaDiagnosticsHandlerWithResolver(t, resolver, []QueryCredential{
+		{
+			ID:               "diagnostics",
+			Token:            "diagnostics-token",
+			Scopes:           []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaDiagnostics},
+			AllowedWriteKeys: []string{"wk_other"},
+		},
+	}, sampleKafkaDiagnosticsResponse())
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer diagnostics-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected process-scoped diagnostics to ignore write_key allowlist, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("kafka diagnostics should not resolve a source when write_key is present, got %d resolver calls", resolver.calls)
+	}
+}
+
+func TestKafkaDiagnosticsReturnsEmptyPausedObject(t *testing.T) {
+	response := sampleKafkaDiagnosticsResponse()
+	response.Paused = map[string][]int32{}
+	app := newTestKafkaDiagnosticsHandler(t, []QueryCredential{
+		{ID: "diagnostics", Token: "diagnostics-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaDiagnostics}},
+	}, response)
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/diagnostics", "", map[string]string{
+		"Authorization": "Bearer diagnostics-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected diagnostics response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if !strings.Contains(string(ctx.Response.Body()), `"paused":{}`) {
+		t.Fatalf("expected empty paused object, got %s", ctx.Response.Body())
+	}
+}
+
 func TestSwaggerDisabledByDefault(t *testing.T) {
 	app, _ := newTestHandler(t, testSourceConfig(), false)
 
@@ -1729,6 +1849,26 @@ func TestOpenAPIQueryEvidenceDocumentsObservedRows(t *testing.T) {
 	} {
 		if !strings.Contains(spec, fragment) {
 			t.Fatalf("expected QueryEvidence OpenAPI schema to contain %q", fragment)
+		}
+	}
+}
+
+func TestOpenAPIKafkaDiagnosticsDocumentsLagEstimate(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read openapi file failed: %v", err)
+	}
+	spec := string(body)
+
+	for _, fragment := range []string{
+		"/v1/kafka/diagnostics:",
+		"KafkaDiagnosticsResponse:",
+		"lag_estimate:",
+		"process-local estimate, not authoritative broker lag",
+		"dead_letter_failure_total:",
+	} {
+		if !strings.Contains(spec, fragment) {
+			t.Fatalf("expected Kafka diagnostics OpenAPI schema to contain %q", fragment)
 		}
 	}
 }
@@ -1918,6 +2058,87 @@ func newTestPropertyCatalogHandler(t *testing.T, source controlplane.SourceConfi
 		t.Fatalf("new app failed: %v", err)
 	}
 	return app
+}
+
+func newTestKafkaDiagnosticsHandler(t *testing.T, credentials []QueryCredential, response KafkaDiagnosticsResponse) *fiber.App {
+	t.Helper()
+
+	return newTestKafkaDiagnosticsHandlerWithResolver(t, &countingResolver{source: testSourceConfig()}, credentials, response)
+}
+
+func newTestKafkaDiagnosticsHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, credentials []QueryCredential, response KafkaDiagnosticsResponse) *fiber.App {
+	t.Helper()
+
+	app, err := NewApp(Options{
+		CollectPath:          "/collect",
+		HealthPath:           "/healthz",
+		TrackerPath:          "/tracker.js",
+		KafkaDiagnosticsPath: "/v1/kafka/diagnostics",
+		TrackerScript:        []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:         resolver,
+		Bus:              &recordingBus{},
+		QueryCredentials: credentials,
+		KafkaDiagnostics: func() (KafkaDiagnosticsResponse, bool) {
+			return response, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("new app failed: %v", err)
+	}
+	return app
+}
+
+func sampleKafkaDiagnosticsResponse() KafkaDiagnosticsResponse {
+	return KafkaDiagnosticsResponse{
+		Topic:           "analytics.events",
+		DeadLetterTopic: "analytics.events.dead",
+		WorkerPool: KafkaWorkerPoolDiagnostics{
+			Name:            "kafka-eventbus-handler",
+			GoroutinesTotal: 12,
+			Queued:          10,
+			QueueCapacity:   20,
+			QueueUsageRatio: 0.5,
+			Workers:         5,
+			SubmittedTotal:  30,
+			CompletedTotal:  19,
+			RejectedTotal:   1,
+		},
+		CompletionGate: KafkaCompletionGateDiagnostics{
+			InFlightMessages:  2,
+			WaitingTasks:      4,
+			CompletedMessages: 18,
+		},
+		Commits: []KafkaOrderedCommitDiagnostics{
+			{
+				Topic:               "analytics.events",
+				Partition:           2,
+				Initialized:         true,
+				NextOffset:          10,
+				HighWaterMarkOffset: 17,
+				LagEstimate:         7,
+				PendingCount:        2,
+				DoneCount:           1,
+				OldestPendingOffset: 10,
+				LargestPendingGap:   3,
+			},
+		},
+		Paused: map[string][]int32{"analytics.events": {2}},
+		Metrics: KafkaMetricsDiagnostics{
+			ConsumedTotal:          40,
+			HandlerSuccessTotal:    35,
+			HandlerFailureTotal:    4,
+			HandlerRetryTotal:      3,
+			MalformedTotal:         1,
+			DeadLetterSuccessTotal: 2,
+			DeadLetterFailureTotal: 1,
+			PausedPartitions:       1,
+			PauseTransitionsTotal:  2,
+			ResumeTransitionsTotal: 1,
+		},
+	}
 }
 
 func serve(app *fiber.App, method string, path string, body string, headers map[string]string) *testCtx {

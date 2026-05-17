@@ -336,6 +336,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/kafka/diagnostics:
+    get:
+      summary: Read process-local Kafka EventBus diagnostics.
+      description: Internal operator endpoint. The response is a process-local diagnostic snapshot and does not include broker credentials, raw event payloads, or authoritative broker lag.
+      parameters:
+        - $ref: "#/components/parameters/QueryAuthorization"
+      responses:
+        "200":
+          description: Kafka EventBus diagnostic snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KafkaDiagnosticsResponse"
+        "401":
+          description: Missing, expired, not-yet-valid, or unknown query token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Query token scope does not allow Kafka diagnostics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Kafka diagnostics are not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   parameters:
     WriteKey:
@@ -542,6 +573,142 @@ components:
             $ref: "#/components/schemas/PropertyCatalogItem"
         limit:
           type: integer
+    KafkaWorkerPoolDiagnostics:
+      type: object
+      required: [name, goroutines_total, queued, queue_capacity, queue_usage_ratio, workers, submitted_total, completed_total, rejected_total, closed]
+      properties:
+        name:
+          type: string
+        goroutines_total:
+          type: integer
+          description: Runtime goroutine count at sampling time.
+        queued:
+          type: integer
+          format: int64
+        queue_capacity:
+          type: integer
+        queue_usage_ratio:
+          type: number
+          format: double
+        workers:
+          type: integer
+        submitted_total:
+          type: integer
+          format: int64
+        completed_total:
+          type: integer
+          format: int64
+        rejected_total:
+          type: integer
+          format: int64
+        closed:
+          type: boolean
+    KafkaCompletionGateDiagnostics:
+      type: object
+      required: [in_flight_messages, waiting_tasks, completed_messages]
+      properties:
+        in_flight_messages:
+          type: integer
+          format: int64
+        waiting_tasks:
+          type: integer
+          format: int64
+        completed_messages:
+          type: integer
+          format: int64
+    KafkaOrderedCommitDiagnostics:
+      type: object
+      required: [topic, partition, initialized, next_offset, high_water_mark_offset, lag_estimate, pending_count, done_count, oldest_pending_offset, largest_pending_gap]
+      properties:
+        topic:
+          type: string
+        partition:
+          type: integer
+          format: int32
+        initialized:
+          type: boolean
+        next_offset:
+          type: integer
+          format: int64
+          description: Earliest offset still blocking ordered completion.
+        high_water_mark_offset:
+          type: integer
+          format: int64
+          description: Latest claim high-water mark observed by this process.
+        lag_estimate:
+          type: integer
+          format: int64
+          description: process-local estimate, not authoritative broker lag.
+        pending_count:
+          type: integer
+        done_count:
+          type: integer
+        oldest_pending_offset:
+          type: integer
+          format: int64
+        largest_pending_gap:
+          type: integer
+          format: int64
+    KafkaMetricsDiagnostics:
+      type: object
+      required: [consumed_total, handler_success_total, handler_failure_total, handler_retry_total, malformed_total, dead_letter_success_total, dead_letter_failure_total, paused_partitions, pause_transitions_total, resume_transitions_total]
+      properties:
+        consumed_total:
+          type: integer
+          format: int64
+        handler_success_total:
+          type: integer
+          format: int64
+        handler_failure_total:
+          type: integer
+          format: int64
+        handler_retry_total:
+          type: integer
+          format: int64
+        malformed_total:
+          type: integer
+          format: int64
+        dead_letter_success_total:
+          type: integer
+          format: int64
+        dead_letter_failure_total:
+          type: integer
+          format: int64
+        paused_partitions:
+          type: integer
+          format: int64
+        pause_transitions_total:
+          type: integer
+          format: int64
+        resume_transitions_total:
+          type: integer
+          format: int64
+    KafkaDiagnosticsResponse:
+      type: object
+      required: [topic, dead_letter_topic, worker_pool, completion_gate, commits, metrics]
+      properties:
+        topic:
+          type: string
+        dead_letter_topic:
+          type: string
+        worker_pool:
+          $ref: "#/components/schemas/KafkaWorkerPoolDiagnostics"
+        completion_gate:
+          $ref: "#/components/schemas/KafkaCompletionGateDiagnostics"
+        commits:
+          type: array
+          items:
+            $ref: "#/components/schemas/KafkaOrderedCommitDiagnostics"
+        paused:
+          type: object
+          description: Topic-to-partition list currently paused by local backpressure.
+          additionalProperties:
+            type: array
+            items:
+              type: integer
+              format: int32
+        metrics:
+          $ref: "#/components/schemas/KafkaMetricsDiagnostics"
     QueryEvidence:
       type: object
       required:

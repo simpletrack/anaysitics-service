@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	kafkaeventbus "github.com/simpletrack/analytics-core/eventbus/kafka"
 	"github.com/simpletrack/analytics-core/storage"
 	"github.com/simpletrack/analytics-service/internal/config"
 	"github.com/simpletrack/analytics-service/internal/controlplane"
@@ -97,6 +98,79 @@ func TestKafkaEventBusStatsReturnsFalseWithoutKafka(t *testing.T) {
 
 	if stats, ok := runtime.KafkaEventBusStats(); ok || stats.Topic != "" {
 		t.Fatalf("unexpected Kafka stats for non-Kafka runtime: ok=%v stats=%#v", ok, stats)
+	}
+}
+
+func TestKafkaDiagnosticsResponseFromStatsMapsDiagnosticSnapshot(t *testing.T) {
+	stats := kafkaeventbus.Stats{
+		Topic:           "analytics.events",
+		DeadLetterTopic: "analytics.events.dead",
+		WorkerPool: kafkaeventbus.WorkerPoolStats{
+			Name:            "kafka-eventbus-handler",
+			GoroutinesTotal: 12,
+			Queued:          10,
+			QueueCapacity:   20,
+			QueueUsageRatio: 0.5,
+			Workers:         5,
+			SubmittedTotal:  30,
+			CompletedTotal:  19,
+			RejectedTotal:   1,
+			Closed:          true,
+		},
+		CompletionGate: kafkaeventbus.CompletionGateStats{
+			InFlightMessages:  2,
+			WaitingTasks:      4,
+			CompletedMessages: 18,
+		},
+		Commits: []kafkaeventbus.OrderedCommitStats{
+			{
+				Topic:               "analytics.events",
+				Partition:           2,
+				Initialized:         true,
+				NextOffset:          10,
+				HighWaterMarkOffset: 17,
+				Lag:                 7,
+				PendingCount:        2,
+				DoneCount:           1,
+				OldestPendingOffset: 10,
+				LargestPendingGap:   3,
+			},
+		},
+		Paused: map[string][]int32{"analytics.events": {2}},
+		Metrics: kafkaeventbus.MetricsStats{
+			ConsumedTotal:          40,
+			HandlerSuccessTotal:    35,
+			HandlerFailureTotal:    4,
+			HandlerRetryTotal:      3,
+			MalformedTotal:         1,
+			DeadLetterSuccessTotal: 2,
+			DeadLetterFailureTotal: 1,
+			PausedPartitions:       1,
+			PauseTransitionsTotal:  2,
+			ResumeTransitionsTotal: 1,
+		},
+	}
+
+	response := kafkaDiagnosticsResponseFromStats(stats)
+
+	if response.Topic != stats.Topic || response.DeadLetterTopic != stats.DeadLetterTopic {
+		t.Fatalf("unexpected topics in diagnostics response: %#v", response)
+	}
+	if response.WorkerPool.QueueUsageRatio != stats.WorkerPool.QueueUsageRatio || !response.WorkerPool.Closed {
+		t.Fatalf("unexpected worker pool mapping: %#v", response.WorkerPool)
+	}
+	if len(response.Commits) != 1 || response.Commits[0].LagEstimate != stats.Commits[0].Lag || response.Commits[0].NextOffset != stats.Commits[0].NextOffset {
+		t.Fatalf("unexpected commit mapping: %#v", response.Commits)
+	}
+	if response.Metrics.DeadLetterFailureTotal != stats.Metrics.DeadLetterFailureTotal || response.Metrics.PausedPartitions != stats.Metrics.PausedPartitions {
+		t.Fatalf("unexpected metrics mapping: %#v", response.Metrics)
+	}
+	stats.Paused["analytics.events"][0] = 9
+	if response.Paused["analytics.events"][0] != 2 {
+		t.Fatalf("expected paused partitions to be cloned, got %#v", response.Paused)
+	}
+	if empty := clonePausedPartitions(nil); empty == nil || len(empty) != 0 {
+		t.Fatalf("expected empty paused map for nil provider state, got %#v", empty)
 	}
 }
 

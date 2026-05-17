@@ -55,6 +55,8 @@ const (
 	ReadbackRouteProperties ReadbackRoute = "properties"
 	// ReadbackRouteGoals gates P1 goal-count readback used by goal status cards.
 	ReadbackRouteGoals ReadbackRoute = "goals"
+	// ReadbackRouteKafkaDiagnostics gates process-level Kafka EventBus diagnostics.
+	ReadbackRouteKafkaDiagnostics ReadbackRoute = "kafka_diagnostics"
 )
 
 // ReadbackPolicy describes which internal readback families a source may use.

@@ -300,6 +300,74 @@ func TestLoadFromEnvAcceptsQueryModeConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAcceptsKafkaDiagnosticsWithoutQueryMode(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_PATH", "/internal/kafka")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "diagnostics-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES", "kafka_diagnostics")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected kafka diagnostics config to load: %v", err)
+	}
+	if cfg.QueryEnabled {
+		t.Fatalf("kafka diagnostics should not force query mode")
+	}
+	if !cfg.KafkaDiagnosticsEnabled || cfg.KafkaDiagnosticsPath != "/internal/kafka" {
+		t.Fatalf("unexpected diagnostics config enabled=%v path=%q", cfg.KafkaDiagnosticsEnabled, cfg.KafkaDiagnosticsPath)
+	}
+	if len(cfg.QueryCredentials) != 1 || len(cfg.QueryCredentials[0].Scopes) != 1 || cfg.QueryCredentials[0].Scopes[0] != controlplane.ReadbackRouteKafkaDiagnostics {
+		t.Fatalf("expected kafka diagnostics query scope, got %#v", cfg.QueryCredentials)
+	}
+}
+
+func TestLoadFromEnvAcceptsKafkaDiagnosticsWithRotationTokenOnly(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKENS_JSON", `[
+		{"id":"diagnostics","token":"diagnostics-token","scopes":["kafka_diagnostics"]}
+	]`)
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected kafka diagnostics rotation-token config to load: %v", err)
+	}
+	if !slices.Equal(cfg.QueryTokens, []string{"diagnostics-token"}) {
+		t.Fatalf("unexpected diagnostics query tokens %#v", cfg.QueryTokens)
+	}
+	if len(cfg.QueryCredentials) != 1 || cfg.QueryCredentials[0].ID != "diagnostics" {
+		t.Fatalf("expected structured diagnostics credential, got %#v", cfg.QueryCredentials)
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaDiagnosticsWithoutKafka(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "diagnostics-token")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected kafka diagnostics without Kafka event bus to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaDiagnosticsWithoutQueryToken(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected kafka diagnostics without query token to fail")
+	}
+}
+
 func TestLoadFromEnvAcceptsQueryTokenRotationAllowlist(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
 	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")

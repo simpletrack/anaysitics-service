@@ -447,26 +447,8 @@ func eventColumnFilters(ctx fiber.Ctx) []storage.EventFilter {
 }
 
 func (h *Handler) requireQueryToken(ctx fiber.Ctx, route controlplane.ReadbackRoute) (queryTokenAuthDecision, bool) {
-	// A missing accepted-token list means the internal read API was not safely
-	// configured, so hide the route shape instead of returning auth details.
-	if len(h.opts.QueryCredentials) == 0 {
-		_ = h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
-		return queryTokenAuthDecision{State: queryTokenAuthUnknown}, false
-	}
-	// Accept any configured rotation token while keeping source resolution and
-	// query execution behind successful internal authentication.
-	decision := authorizeQueryToken(bearerToken(ctx.Get("Authorization")), h.opts.QueryCredentials, h.opts.Now())
-	if decision.State == queryTokenAuthUnknown || decision.State == queryTokenAuthExpired || decision.State == queryTokenAuthNotYetValid {
-		h.auditRejectedQueryToken(ctx, decision)
-		_ = h.writeJSON(ctx, fiber.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
-		return queryTokenAuthDecision{}, false
-	}
-	// Enforce token-local route scopes before source resolution so a valid token
-	// cannot be reused across readback families it was never meant to reach.
-	if !decision.Credential.AllowsReadbackRoute(route) {
-		decision.State = queryTokenAuthScopeDenied
-		h.auditRejectedQueryToken(ctx, decision)
-		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "forbidden"})
+	decision, ok := h.requireProcessQueryToken(ctx, route)
+	if !ok {
 		return queryTokenAuthDecision{}, false
 	}
 	// Enforce token-local source boundaries before control-plane resolution so
@@ -474,6 +456,34 @@ func (h *Handler) requireQueryToken(ctx fiber.Ctx, route controlplane.ReadbackRo
 	writeKey := h.queryWriteKey(ctx)
 	if writeKey != "" && !decision.Credential.AllowsWriteKey(writeKey) {
 		decision.State = queryTokenAuthWriteKeyDenied
+		h.auditRejectedQueryToken(ctx, decision)
+		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		return queryTokenAuthDecision{}, false
+	}
+	return decision, true
+}
+
+func (h *Handler) requireProcessQueryToken(ctx fiber.Ctx, route controlplane.ReadbackRoute) (queryTokenAuthDecision, bool) {
+	// A missing accepted-token list means the internal read API was not safely
+	// configured, so hide the route shape instead of returning auth details.
+	if len(h.opts.QueryCredentials) == 0 {
+		_ = h.writeJSON(ctx, fiber.StatusNotFound, ErrorResponse{Error: "not found"})
+		return queryTokenAuthDecision{State: queryTokenAuthUnknown}, false
+	}
+
+	// Accept any configured rotation token while keeping source resolution,
+	// diagnostics, and query execution behind successful internal authentication.
+	decision := authorizeQueryToken(bearerToken(ctx.Get("Authorization")), h.opts.QueryCredentials, h.opts.Now())
+	if decision.State == queryTokenAuthUnknown || decision.State == queryTokenAuthExpired || decision.State == queryTokenAuthNotYetValid {
+		h.auditRejectedQueryToken(ctx, decision)
+		_ = h.writeJSON(ctx, fiber.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
+		return queryTokenAuthDecision{}, false
+	}
+
+	// Enforce token-local route scopes before any source-specific checks. Process
+	// scoped diagnostics deliberately stop here and do not inspect write_key.
+	if !decision.Credential.AllowsReadbackRoute(route) {
+		decision.State = queryTokenAuthScopeDenied
 		h.auditRejectedQueryToken(ctx, decision)
 		_ = h.writeJSON(ctx, fiber.StatusForbidden, ErrorResponse{Error: "forbidden"})
 		return queryTokenAuthDecision{}, false

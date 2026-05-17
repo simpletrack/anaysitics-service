@@ -60,6 +60,12 @@ func New(cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 	closers = append(closers, busClosers...)
+	kafkaBus := kafkaBusFromEventBus(bus)
+	kafkaDiagnostics, err := newKafkaDiagnosticsSource(cfg, kafkaBus)
+	if err != nil {
+		_ = closeAll(closers)
+		return nil, err
+	}
 
 	// Load the tracker asset at startup so missing deployments fail closed
 	// instead of returning 404s for a configured public SDK route.
@@ -97,6 +103,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		EventsPath:            cfg.EventsPath,
 		RealtimePath:          cfg.RealtimePath,
 		PropertiesPath:        cfg.PropertiesPath,
+		KafkaDiagnosticsPath:  cfg.KafkaDiagnosticsPath,
 		SwaggerEnabled:        cfg.SwaggerEnabled,
 		SwaggerPath:           cfg.SwaggerPath,
 		OpenAPIFile:           cfg.OpenAPIFile,
@@ -110,6 +117,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		QueryToken:            cfg.QueryToken,
 		QueryTokens:           cfg.QueryTokens,
 		QueryCredentials:      toQueryCredentials(cfg.QueryCredentials),
+		KafkaDiagnostics:      kafkaDiagnostics,
 		GeoResolver:           geoResolver,
 	})
 	if err != nil {
@@ -133,9 +141,91 @@ func New(cfg config.Config) (*Runtime, error) {
 	return &Runtime{
 		app:       app,
 		processor: processor,
-		kafkaBus:  kafkaBusFromEventBus(bus),
+		kafkaBus:  kafkaBus,
 		closers:   closers,
 	}, nil
+}
+
+// newKafkaDiagnosticsSource adapts the Kafka provider diagnostic surface to collectapi.
+func newKafkaDiagnosticsSource(cfg config.Config, kafkaBus *kafkaeventbus.Bus) (collectapi.KafkaDiagnosticsSource, error) {
+	if !cfg.KafkaDiagnosticsEnabled {
+		return nil, nil
+	}
+	if kafkaBus == nil {
+		return nil, configError("kafka diagnostics require a Kafka event bus")
+	}
+	return func() (collectapi.KafkaDiagnosticsResponse, bool) {
+		// Convert the provider snapshot at the runtime boundary so collectapi never
+		// imports analytics-core's Kafka package or any Sarama-facing adapter type.
+		return kafkaDiagnosticsResponseFromStats(kafkaBus.Stats()), true
+	}, nil
+}
+
+// kafkaDiagnosticsResponseFromStats maps provider stats to the HTTP response contract.
+func kafkaDiagnosticsResponseFromStats(stats kafkaeventbus.Stats) collectapi.KafkaDiagnosticsResponse {
+	commits := make([]collectapi.KafkaOrderedCommitDiagnostics, 0, len(stats.Commits))
+	for _, commit := range stats.Commits {
+		commits = append(commits, collectapi.KafkaOrderedCommitDiagnostics{
+			Topic:               commit.Topic,
+			Partition:           commit.Partition,
+			Initialized:         commit.Initialized,
+			NextOffset:          commit.NextOffset,
+			HighWaterMarkOffset: commit.HighWaterMarkOffset,
+			LagEstimate:         commit.Lag,
+			PendingCount:        commit.PendingCount,
+			DoneCount:           commit.DoneCount,
+			OldestPendingOffset: commit.OldestPendingOffset,
+			LargestPendingGap:   commit.LargestPendingGap,
+		})
+	}
+
+	return collectapi.KafkaDiagnosticsResponse{
+		Topic:           stats.Topic,
+		DeadLetterTopic: stats.DeadLetterTopic,
+		WorkerPool: collectapi.KafkaWorkerPoolDiagnostics{
+			Name:            stats.WorkerPool.Name,
+			GoroutinesTotal: stats.WorkerPool.GoroutinesTotal,
+			Queued:          stats.WorkerPool.Queued,
+			QueueCapacity:   stats.WorkerPool.QueueCapacity,
+			QueueUsageRatio: stats.WorkerPool.QueueUsageRatio,
+			Workers:         stats.WorkerPool.Workers,
+			SubmittedTotal:  stats.WorkerPool.SubmittedTotal,
+			CompletedTotal:  stats.WorkerPool.CompletedTotal,
+			RejectedTotal:   stats.WorkerPool.RejectedTotal,
+			Closed:          stats.WorkerPool.Closed,
+		},
+		CompletionGate: collectapi.KafkaCompletionGateDiagnostics{
+			InFlightMessages:  stats.CompletionGate.InFlightMessages,
+			WaitingTasks:      stats.CompletionGate.WaitingTasks,
+			CompletedMessages: stats.CompletionGate.CompletedMessages,
+		},
+		Commits: commits,
+		Paused:  clonePausedPartitions(stats.Paused),
+		Metrics: collectapi.KafkaMetricsDiagnostics{
+			ConsumedTotal:          stats.Metrics.ConsumedTotal,
+			HandlerSuccessTotal:    stats.Metrics.HandlerSuccessTotal,
+			HandlerFailureTotal:    stats.Metrics.HandlerFailureTotal,
+			HandlerRetryTotal:      stats.Metrics.HandlerRetryTotal,
+			MalformedTotal:         stats.Metrics.MalformedTotal,
+			DeadLetterSuccessTotal: stats.Metrics.DeadLetterSuccessTotal,
+			DeadLetterFailureTotal: stats.Metrics.DeadLetterFailureTotal,
+			PausedPartitions:       stats.Metrics.PausedPartitions,
+			PauseTransitionsTotal:  stats.Metrics.PauseTransitionsTotal,
+			ResumeTransitionsTotal: stats.Metrics.ResumeTransitionsTotal,
+		},
+	}
+}
+
+// clonePausedPartitions copies provider-owned pause state before JSON response shaping.
+func clonePausedPartitions(paused map[string][]int32) map[string][]int32 {
+	out := make(map[string][]int32, len(paused))
+	if len(paused) == 0 {
+		return out
+	}
+	for topic, partitions := range paused {
+		out[topic] = append([]int32(nil), partitions...)
+	}
+	return out
 }
 
 func newGeoResolver(cfg config.Config) (*geoip.Resolver, io.Closer, error) {
