@@ -1773,6 +1773,137 @@ func TestKafkaDiagnosticsReturnsEmptyPausedObject(t *testing.T) {
 	}
 }
 
+func TestKafkaMetricsDisabledByDefault(t *testing.T) {
+	app, _ := newTestHandler(t, testSourceConfig(), false)
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/metrics", "", map[string]string{
+		"Authorization": "Bearer query-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusNotFound {
+		t.Fatalf("expected disabled kafka metrics route to be hidden, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+func TestKafkaMetricsRequiresBearerTokenAndScope(t *testing.T) {
+	app := newTestKafkaMetricsHandler(t, []QueryCredential{
+		{ID: "diagnostics", Token: "diagnostics-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaDiagnostics}},
+		{ID: "metrics", Token: "metrics-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaMetrics}},
+	}, sampleKafkaDiagnosticsResponse())
+
+	missing := serve(app, fiber.MethodGet, "/v1/kafka/metrics", "", nil)
+	if missing.Response.StatusCode() != fiber.StatusUnauthorized {
+		t.Fatalf("expected missing token rejection, got %d: %s", missing.Response.StatusCode(), missing.Response.Body())
+	}
+
+	outOfScope := serve(app, fiber.MethodGet, "/v1/kafka/metrics", "", map[string]string{
+		"Authorization": "Bearer diagnostics-token",
+	})
+	if outOfScope.Response.StatusCode() != fiber.StatusForbidden {
+		t.Fatalf("expected scope rejection, got %d: %s", outOfScope.Response.StatusCode(), outOfScope.Response.Body())
+	}
+
+	allowed := serve(app, fiber.MethodGet, "/v1/kafka/metrics", "", map[string]string{
+		"Authorization": "Bearer metrics-token",
+	})
+	if allowed.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected metrics response, got %d: %s", allowed.Response.StatusCode(), allowed.Response.Body())
+	}
+}
+
+func TestKafkaMetricsReturnsPrometheusSnapshotWithoutSourceResolution(t *testing.T) {
+	resolver := &countingResolver{source: testSourceConfig()}
+	app := newTestKafkaMetricsHandlerWithResolver(t, resolver, []QueryCredential{
+		{ID: "metrics", Token: "metrics-token", Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaMetrics}},
+	}, sampleKafkaDiagnosticsResponse())
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/metrics?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer metrics-token",
+	})
+	body := string(ctx.Response.Body())
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected metrics response, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("kafka metrics should not resolve a source, got %d resolver calls", resolver.calls)
+	}
+	if contentType := string(ctx.Response.Header.Peek("Content-Type")); !strings.HasPrefix(contentType, "text/plain") {
+		t.Fatalf("expected prometheus text content type, got %q", contentType)
+	}
+	for _, fragment := range []string{
+		"# HELP simpletrack_kafka_consumed_total Kafka records consumed from the primary analytics topic.",
+		"# TYPE simpletrack_kafka_consumed_total counter",
+		"simpletrack_kafka_consumed_total 40",
+		"simpletrack_kafka_dead_letter_failure_total 1",
+		"simpletrack_kafka_worker_queue_usage_ratio 0.5",
+		"simpletrack_kafka_completion_in_flight_messages 2",
+		`simpletrack_kafka_ordered_commit_next_offset{topic="analytics.events",partition="2"} 10`,
+		`simpletrack_kafka_ordered_commit_lag_estimate{topic="analytics.events",partition="2"} 7`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("expected kafka metrics body to contain %q, got:\n%s", fragment, body)
+		}
+	}
+	if strings.Contains(body, "payload") || strings.Contains(body, "secret") || strings.Contains(body, "password") || strings.Contains(body, "sasl") {
+		t.Fatalf("metrics response should not expose broker secrets or payloads: %s", body)
+	}
+}
+
+func TestKafkaMetricsIgnoresWriteKeyAllowlist(t *testing.T) {
+	resolver := &countingResolver{source: testSourceConfig()}
+	app := newTestKafkaMetricsHandlerWithResolver(t, resolver, []QueryCredential{
+		{
+			ID:               "metrics",
+			Token:            "metrics-token",
+			Scopes:           []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaMetrics},
+			AllowedWriteKeys: []string{"wk_other"},
+		},
+	}, sampleKafkaDiagnosticsResponse())
+
+	ctx := serve(app, fiber.MethodGet, "/v1/kafka/metrics?write_key=wk_live", "", map[string]string{
+		"Authorization": "Bearer metrics-token",
+	})
+
+	if ctx.Response.StatusCode() != fiber.StatusOK {
+		t.Fatalf("expected process-scoped metrics to ignore write_key allowlist, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("kafka metrics should not resolve a source when write_key is present, got %d resolver calls", resolver.calls)
+	}
+}
+
+func TestRenderKafkaMetricsWritesOneMetadataBlockForMultiplePartitions(t *testing.T) {
+	response := sampleKafkaDiagnosticsResponse()
+	response.Commits = append(response.Commits, KafkaOrderedCommitDiagnostics{
+		Topic:               "analytics.events",
+		Partition:           3,
+		Initialized:         true,
+		NextOffset:          20,
+		HighWaterMarkOffset: 30,
+		LagEstimate:         10,
+		PendingCount:        1,
+		DoneCount:           0,
+		OldestPendingOffset: 20,
+		LargestPendingGap:   1,
+	})
+
+	body := renderKafkaMetrics(response)
+
+	if count := strings.Count(body, "# HELP simpletrack_kafka_ordered_commit_next_offset "); count != 1 {
+		t.Fatalf("expected one HELP block for next_offset metric family, got %d:\n%s", count, body)
+	}
+	for _, fragment := range []string{
+		`simpletrack_kafka_ordered_commit_next_offset{topic="analytics.events",partition="2"} 10`,
+		`simpletrack_kafka_ordered_commit_next_offset{topic="analytics.events",partition="3"} 20`,
+		`simpletrack_kafka_ordered_commit_lag_estimate{topic="analytics.events",partition="3"} 10`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("expected metrics body to contain %q, got:\n%s", fragment, body)
+		}
+	}
+}
+
 func TestSwaggerDisabledByDefault(t *testing.T) {
 	app, _ := newTestHandler(t, testSourceConfig(), false)
 
@@ -1869,6 +2000,25 @@ func TestOpenAPIKafkaDiagnosticsDocumentsLagEstimate(t *testing.T) {
 	} {
 		if !strings.Contains(spec, fragment) {
 			t.Fatalf("expected Kafka diagnostics OpenAPI schema to contain %q", fragment)
+		}
+	}
+}
+
+func TestOpenAPIKafkaMetricsDocumentsPrometheusText(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read openapi file failed: %v", err)
+	}
+	spec := string(body)
+
+	for _, fragment := range []string{
+		"/v1/kafka/metrics:",
+		"text/plain:",
+		"Prometheus text metrics derived from KafkaDiagnosticsResponse",
+		"simpletrack_kafka_ordered_commit_lag_estimate",
+	} {
+		if !strings.Contains(spec, fragment) {
+			t.Fatalf("expected Kafka metrics OpenAPI schema to contain %q", fragment)
 		}
 	}
 }
@@ -2082,6 +2232,37 @@ func newTestKafkaDiagnosticsHandlerWithResolver(t *testing.T, resolver controlpl
 		Bus:              &recordingBus{},
 		QueryCredentials: credentials,
 		KafkaDiagnostics: func() (KafkaDiagnosticsResponse, bool) {
+			return response, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("new app failed: %v", err)
+	}
+	return app
+}
+
+func newTestKafkaMetricsHandler(t *testing.T, credentials []QueryCredential, response KafkaDiagnosticsResponse) *fiber.App {
+	t.Helper()
+
+	return newTestKafkaMetricsHandlerWithResolver(t, &countingResolver{source: testSourceConfig()}, credentials, response)
+}
+
+func newTestKafkaMetricsHandlerWithResolver(t *testing.T, resolver controlplane.Resolver, credentials []QueryCredential, response KafkaDiagnosticsResponse) *fiber.App {
+	t.Helper()
+
+	app, err := NewApp(Options{
+		CollectPath:      "/collect",
+		HealthPath:       "/healthz",
+		TrackerPath:      "/tracker.js",
+		KafkaMetricsPath: "/v1/kafka/metrics",
+		TrackerScript:    []byte("(function(window){ window.simpletrack = {}; })(window);"),
+		Now: func() time.Time {
+			return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+		},
+		Resolver:         resolver,
+		Bus:              &recordingBus{},
+		QueryCredentials: credentials,
+		KafkaMetrics: func() (KafkaDiagnosticsResponse, bool) {
 			return response, true
 		},
 	})

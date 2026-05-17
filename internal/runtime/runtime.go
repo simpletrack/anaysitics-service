@@ -66,6 +66,11 @@ func New(cfg config.Config) (*Runtime, error) {
 		_ = closeAll(closers)
 		return nil, err
 	}
+	kafkaMetrics, err := newKafkaMetricsSource(cfg, kafkaBus)
+	if err != nil {
+		_ = closeAll(closers)
+		return nil, err
+	}
 
 	// Load the tracker asset at startup so missing deployments fail closed
 	// instead of returning 404s for a configured public SDK route.
@@ -118,6 +123,8 @@ func New(cfg config.Config) (*Runtime, error) {
 		QueryTokens:           cfg.QueryTokens,
 		QueryCredentials:      toQueryCredentials(cfg.QueryCredentials),
 		KafkaDiagnostics:      kafkaDiagnostics,
+		KafkaMetricsPath:      cfg.KafkaMetricsPath,
+		KafkaMetrics:          kafkaMetrics,
 		GeoResolver:           geoResolver,
 	})
 	if err != nil {
@@ -157,6 +164,21 @@ func newKafkaDiagnosticsSource(cfg config.Config, kafkaBus *kafkaeventbus.Bus) (
 	return func() (collectapi.KafkaDiagnosticsResponse, bool) {
 		// Convert the provider snapshot at the runtime boundary so collectapi never
 		// imports analytics-core's Kafka package or any Sarama-facing adapter type.
+		return kafkaDiagnosticsResponseFromStats(kafkaBus.Stats()), true
+	}, nil
+}
+
+// newKafkaMetricsSource adapts the Kafka provider stats surface to collectapi metrics.
+func newKafkaMetricsSource(cfg config.Config, kafkaBus *kafkaeventbus.Bus) (collectapi.KafkaMetricsSource, error) {
+	if !cfg.KafkaMetricsEnabled {
+		return nil, nil
+	}
+	if kafkaBus == nil {
+		return nil, configError("kafka metrics require a Kafka event bus")
+	}
+	return func() (collectapi.KafkaDiagnosticsResponse, bool) {
+		// Reuse the same sanitized DTO as diagnostics so metrics export cannot gain
+		// broker secrets, Sarama internals, or raw event payloads by bypassing HTTP.
 		return kafkaDiagnosticsResponseFromStats(kafkaBus.Stats()), true
 	}, nil
 }

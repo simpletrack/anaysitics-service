@@ -174,6 +174,21 @@ func TestKafkaDiagnosticsResponseFromStatsMapsDiagnosticSnapshot(t *testing.T) {
 	}
 }
 
+func TestNewKafkaMetricsSourceRequiresKafkaBus(t *testing.T) {
+	_, err := newKafkaMetricsSource(config.Config{KafkaMetricsEnabled: true}, nil)
+	if err == nil {
+		t.Fatal("expected kafka metrics source without Kafka bus to fail")
+	}
+
+	source, err := newKafkaMetricsSource(config.Config{}, nil)
+	if err != nil {
+		t.Fatalf("expected disabled kafka metrics source to succeed: %v", err)
+	}
+	if source != nil {
+		t.Fatalf("expected disabled kafka metrics source to be nil")
+	}
+}
+
 func TestAllowedPropertySelectorsUseEnabledStartupSources(t *testing.T) {
 	enabled := testRuntimeSource()
 	enabled.AllowedPropertyFilters = []controlplane.AllowedPropertyFilter{

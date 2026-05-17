@@ -345,6 +345,53 @@ func TestLoadFromEnvAcceptsKafkaDiagnosticsWithRotationTokenOnly(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAcceptsKafkaMetricsWithoutQueryMode(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_METRICS_PATH", "/internal/kafka/metrics")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "metrics-token")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES", "kafka_metrics")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected kafka metrics config to load: %v", err)
+	}
+	if cfg.QueryEnabled {
+		t.Fatalf("kafka metrics should not force query mode")
+	}
+	if !cfg.KafkaMetricsEnabled || cfg.KafkaMetricsPath != "/internal/kafka/metrics" {
+		t.Fatalf("unexpected metrics config enabled=%v path=%q", cfg.KafkaMetricsEnabled, cfg.KafkaMetricsPath)
+	}
+	if len(cfg.QueryCredentials) != 1 || len(cfg.QueryCredentials[0].Scopes) != 1 || cfg.QueryCredentials[0].Scopes[0] != controlplane.ReadbackRouteKafkaMetrics {
+		t.Fatalf("expected kafka metrics query scope, got %#v", cfg.QueryCredentials)
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaMetricsWithoutKafka(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_QUERY_TOKEN", "metrics-token")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected kafka metrics without Kafka event bus to fail")
+	}
+}
+
+func TestLoadFromEnvRejectsKafkaMetricsWithoutQueryToken(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
+	t.Setenv("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_SOURCES_JSON", testSourcesJSON())
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatalf("expected kafka metrics without query token to fail")
+	}
+}
+
 func TestLoadFromEnvRejectsKafkaDiagnosticsWithoutKafka(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
 	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")

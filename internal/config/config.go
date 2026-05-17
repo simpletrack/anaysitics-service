@@ -12,27 +12,28 @@ import (
 )
 
 const (
-	defaultAddr           = ":8080"
-	defaultCollectPath    = "/collect"
-	defaultHealthPath     = "/healthz"
-	defaultTrackerPath    = "/tracker.js"
-	defaultEventsPath     = "/v1/events"
-	defaultGoalsPath      = "/v1/goals"
-	defaultRealtimePath   = "/v1/realtime"
-	defaultPropertiesPath = "/v1/properties"
-	defaultKafkaDiagPath  = "/v1/kafka/diagnostics"
-	defaultSwaggerPath    = "/swagger"
-	defaultOpenAPIFile    = "api/openapi.yaml"
-	defaultTrackerFile    = "public/tracker.js"
-	defaultEventBus       = "redis"
-	defaultRedisStream    = "analytics.events"
-	defaultDeadLetters    = "analytics.events.dead"
-	defaultKafkaTopic     = "analytics.events"
-	defaultKafkaDeadTopic = "analytics.events.dead"
-	defaultKafkaClientID  = "simpletrack-anaysitics-service"
-	defaultWorkerGroup    = "simpletrack-anaysitics-service"
-	defaultTablePrefix    = "events"
-	defaultResolver       = "memory"
+	defaultAddr             = ":8080"
+	defaultCollectPath      = "/collect"
+	defaultHealthPath       = "/healthz"
+	defaultTrackerPath      = "/tracker.js"
+	defaultEventsPath       = "/v1/events"
+	defaultGoalsPath        = "/v1/goals"
+	defaultRealtimePath     = "/v1/realtime"
+	defaultPropertiesPath   = "/v1/properties"
+	defaultKafkaDiagPath    = "/v1/kafka/diagnostics"
+	defaultKafkaMetricsPath = "/v1/kafka/metrics"
+	defaultSwaggerPath      = "/swagger"
+	defaultOpenAPIFile      = "api/openapi.yaml"
+	defaultTrackerFile      = "public/tracker.js"
+	defaultEventBus         = "redis"
+	defaultRedisStream      = "analytics.events"
+	defaultDeadLetters      = "analytics.events.dead"
+	defaultKafkaTopic       = "analytics.events"
+	defaultKafkaDeadTopic   = "analytics.events.dead"
+	defaultKafkaClientID    = "simpletrack-anaysitics-service"
+	defaultWorkerGroup      = "simpletrack-anaysitics-service"
+	defaultTablePrefix      = "events"
+	defaultResolver         = "memory"
 )
 
 // QueryTokenCredential describes one internal readback bearer token and its lifecycle window.
@@ -93,6 +94,8 @@ type Config struct {
 	KafkaSASLHandshake                bool                        // KafkaSASLHandshake controls the Kafka SASL pre-auth handshake
 	KafkaDiagnosticsEnabled           bool                        // KafkaDiagnosticsEnabled exposes process-local Kafka provider diagnostics
 	KafkaDiagnosticsPath              string                      // KafkaDiagnosticsPath is the internal Kafka diagnostics readback route
+	KafkaMetricsEnabled               bool                        // KafkaMetricsEnabled exposes process-local Kafka provider metrics
+	KafkaMetricsPath                  string                      // KafkaMetricsPath is the internal Kafka metrics scrape route
 	IngestionEnabled                  bool                        // IngestionEnabled starts the runtime queue-to-storage worker
 	WorkerGroup                       string                      // WorkerGroup is the durable queue consumer group for ingestion
 	WorkerConsumer                    string                      // WorkerConsumer is the concrete consumer name for this process
@@ -173,6 +176,8 @@ func LoadFromEnv() (Config, error) {
 		KafkaSASLHandshake:                envBool("ANALYTICS_SERVICE_KAFKA_SASL_HANDSHAKE", true),
 		KafkaDiagnosticsEnabled:           envBool("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", false),
 		KafkaDiagnosticsPath:              envString("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_PATH", defaultKafkaDiagPath),
+		KafkaMetricsEnabled:               envBool("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED", false),
+		KafkaMetricsPath:                  envString("ANALYTICS_SERVICE_KAFKA_METRICS_PATH", defaultKafkaMetricsPath),
 		IngestionEnabled:                  envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
 		WorkerGroup:                       envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
 		WorkerConsumer:                    envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
@@ -227,6 +232,14 @@ func LoadFromEnv() (Config, error) {
 		}
 		if len(config.QueryCredentials) == 0 {
 			return Config{}, errors.New("ANALYTICS_SERVICE_QUERY_TOKEN or ANALYTICS_SERVICE_QUERY_TOKENS_JSON is required when ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED=true")
+		}
+	}
+	if config.KafkaMetricsEnabled {
+		if config.EventBus != "kafka" {
+			return Config{}, errors.New("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED requires ANALYTICS_SERVICE_EVENTBUS=kafka")
+		}
+		if len(config.QueryCredentials) == 0 {
+			return Config{}, errors.New("ANALYTICS_SERVICE_QUERY_TOKEN or ANALYTICS_SERVICE_QUERY_TOKENS_JSON is required when ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED=true")
 		}
 	}
 	if config.SourceResolver != "memory" && config.SourceResolver != "http" {
@@ -522,8 +535,10 @@ func parseQueryTokenScope(raw string) (controlplane.ReadbackRoute, error) {
 		return controlplane.ReadbackRouteGoals, nil
 	case controlplane.ReadbackRouteKafkaDiagnostics:
 		return controlplane.ReadbackRouteKafkaDiagnostics, nil
+	case controlplane.ReadbackRouteKafkaMetrics:
+		return controlplane.ReadbackRouteKafkaMetrics, nil
 	default:
-		return "", errors.New("query token scope must be one of realtime, events, properties, goals, kafka_diagnostics")
+		return "", errors.New("query token scope must be one of realtime, events, properties, goals, kafka_diagnostics, kafka_metrics")
 	}
 }
 

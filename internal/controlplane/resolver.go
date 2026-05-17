@@ -57,6 +57,8 @@ const (
 	ReadbackRouteGoals ReadbackRoute = "goals"
 	// ReadbackRouteKafkaDiagnostics gates process-level Kafka EventBus diagnostics.
 	ReadbackRouteKafkaDiagnostics ReadbackRoute = "kafka_diagnostics"
+	// ReadbackRouteKafkaMetrics gates process-level Kafka EventBus metrics.
+	ReadbackRouteKafkaMetrics ReadbackRoute = "kafka_metrics"
 )
 
 // ReadbackPolicy describes which internal readback families a source may use.

@@ -367,6 +367,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/kafka/metrics:
+    get:
+      summary: Scrape process-local Kafka EventBus metrics.
+      description: Internal operator endpoint. The response is Prometheus text metrics derived from KafkaDiagnosticsResponse and does not include broker credentials, raw event payloads, or authoritative broker lag.
+      parameters:
+        - $ref: "#/components/parameters/QueryAuthorization"
+      responses:
+        "200":
+          description: Prometheus text metrics derived from KafkaDiagnosticsResponse.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP simpletrack_kafka_consumed_total Kafka records consumed from the primary analytics topic.
+                # TYPE simpletrack_kafka_consumed_total counter
+                simpletrack_kafka_consumed_total 40
+                # HELP simpletrack_kafka_ordered_commit_lag_estimate Kafka process-local lag estimate by topic-partition; not authoritative broker lag.
+                # TYPE simpletrack_kafka_ordered_commit_lag_estimate gauge
+                simpletrack_kafka_ordered_commit_lag_estimate{topic="analytics.events",partition="2"} 7
+        "401":
+          description: Missing, expired, not-yet-valid, or unknown query token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Query token scope does not allow Kafka metrics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Kafka metrics are not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   parameters:
     WriteKey:

@@ -30,6 +30,7 @@ type Options struct {
 	RealtimePath          string                        // RealtimePath is the GET route used by internal Realtime readback
 	PropertiesPath        string                        // PropertiesPath is the GET route used by internal property catalog reads
 	KafkaDiagnosticsPath  string                        // KafkaDiagnosticsPath is the GET route used by internal Kafka diagnostics
+	KafkaMetricsPath      string                        // KafkaMetricsPath is the GET route used by internal Kafka metrics scraping
 	SwaggerEnabled        bool                          // SwaggerEnabled exposes the generated OpenAPI documentation UI
 	SwaggerPath           string                        // SwaggerPath is the Fiber route prefix for Swagger UI
 	OpenAPIFile           string                        // OpenAPIFile is the local OpenAPI YAML or JSON file served by Swagger UI
@@ -44,6 +45,7 @@ type Options struct {
 	QueryTokens           []string                      // QueryTokens are accepted internal readback tokens during rotation windows
 	QueryCredentials      []QueryCredential             // QueryCredentials are accepted internal readback tokens with lifecycle metadata
 	KafkaDiagnostics      KafkaDiagnosticsSource        // KafkaDiagnostics returns process-local Kafka EventBus diagnostics when configured
+	KafkaMetrics          KafkaMetricsSource            // KafkaMetrics returns process-local Kafka EventBus metrics when configured
 	UserAgentParser       collect.UserAgentParser       // UserAgentParser optionally overrides analytics-core default UA parsing
 	GeoResolver           collect.GeoResolver           // GeoResolver optionally resolves transient client IPs into coarse geography
 }
@@ -114,6 +116,9 @@ func newHandler(opts Options) (*Handler, error) {
 	if opts.KafkaDiagnosticsPath == "" {
 		opts.KafkaDiagnosticsPath = "/v1/kafka/diagnostics"
 	}
+	if opts.KafkaMetricsPath == "" {
+		opts.KafkaMetricsPath = "/v1/kafka/metrics"
+	}
 	if opts.SwaggerPath == "" {
 		opts.SwaggerPath = "/swagger"
 	}
@@ -130,7 +135,7 @@ func newHandler(opts Options) (*Handler, error) {
 	// exposing the internal read routes.
 	opts.QueryCredentials = normalizeQueryCredentials(opts.QueryToken, opts.QueryTokens, opts.QueryCredentials)
 	opts.QueryTokens = nil
-	if (opts.QueryReader != nil || opts.PropertyCatalog != nil || opts.KafkaDiagnostics != nil) && len(opts.QueryCredentials) == 0 {
+	if (opts.QueryReader != nil || opts.PropertyCatalog != nil || opts.KafkaDiagnostics != nil || opts.KafkaMetrics != nil) && len(opts.QueryCredentials) == 0 {
 		return nil, errors.New("query token is required when internal read routes are configured")
 	}
 	if err := validateRoutePaths(opts); err != nil {
@@ -151,6 +156,9 @@ func validateRoutePaths(opts Options) error {
 	}
 	if opts.KafkaDiagnostics != nil {
 		paths["kafka diagnostics path"] = opts.KafkaDiagnosticsPath
+	}
+	if opts.KafkaMetrics != nil {
+		paths["kafka metrics path"] = opts.KafkaMetricsPath
 	}
 	if opts.SwaggerEnabled {
 		paths["swagger path"] = opts.SwaggerPath
@@ -181,6 +189,9 @@ func (h *Handler) registerRoutes(app *fiber.App) {
 	app.Get(h.opts.PropertiesPath, h.handleProperties)
 	if h.opts.KafkaDiagnostics != nil {
 		app.Get(h.opts.KafkaDiagnosticsPath, h.handleKafkaDiagnostics)
+	}
+	if h.opts.KafkaMetrics != nil {
+		app.Get(h.opts.KafkaMetricsPath, h.handleKafkaMetrics)
 	}
 	if h.opts.SwaggerEnabled {
 		app.Use(h.opts.SwaggerPath, swaggerui.New(swaggerui.Config{

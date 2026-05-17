@@ -78,6 +78,33 @@ func ExampleNewApp_kafkaDiagnostics() {
 	// 200
 }
 
+func ExampleNewApp_kafkaMetrics() {
+	resolver, _ := controlplane.NewMemoryResolver([]controlplane.SourceConfig{})
+	app, _ := NewApp(Options{
+		Resolver:      resolver,
+		Bus:           exampleEventBus{},
+		TrackerScript: []byte("window.simpletrack = window.simpletrack || {};"),
+		QueryCredentials: []QueryCredential{
+			{
+				Token:  "metrics-token",
+				Scopes: []controlplane.ReadbackRoute{controlplane.ReadbackRouteKafkaMetrics},
+			},
+		},
+		KafkaMetrics: func() (KafkaDiagnosticsResponse, bool) {
+			return sampleKafkaDiagnosticsResponse(), true
+		},
+	})
+
+	request, _ := http.NewRequest(http.MethodGet, "/v1/kafka/metrics", nil)
+	request.Header.Set("Authorization", "Bearer metrics-token")
+	response, _ := app.Test(request)
+
+	fmt.Println(response.StatusCode)
+
+	// Output:
+	// 200
+}
+
 func ExampleOptions_writeKeyPriority() {
 	handler := &Handler{}
 	app := fiber.New()

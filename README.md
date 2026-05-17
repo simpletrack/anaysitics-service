@@ -212,6 +212,27 @@ DLQ counters, pause/resume counters, paused partitions, ordered commit
 as authoritative broker lag, billing evidence, or an SLA metric. Broker secrets,
 TLS/SASL material, and raw event payloads are intentionally not returned.
 
+For Prometheus-style scraping, enable the separate default-disabled metrics
+route. It exports the same sanitized Kafka provider snapshot as counters and
+gauges, including retry/DLQ counters, worker queue pressure, completion-gate
+pressure, paused partitions, and per topic-partition ordered commit gauges. Use
+the `kafka_metrics` scope so dashboards and scrapers do not need the broader
+diagnostics permission:
+
+```powershell
+$env:ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED='true'
+$env:ANALYTICS_SERVICE_KAFKA_METRICS_PATH='/v1/kafka/metrics'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN='kafka-metrics-token'
+$env:ANALYTICS_SERVICE_QUERY_TOKEN_SCOPES='kafka_metrics'
+
+Invoke-WebRequest -Method Get -Uri 'http://127.0.0.1:8080/v1/kafka/metrics' `
+  -Headers @{ Authorization = "Bearer kafka-metrics-token" }
+```
+
+`simpletrack_kafka_ordered_commit_lag_estimate` remains process-local, not
+authoritative broker lag. Keep broker-side lag, ISR, controller, and topic
+health alerts on Kafka exporter or broker metrics.
+
 Redis Stream remains suitable for local, small-volume, and test deployments. To run ingestion in the same process for local or small deployments, opt in:
 
 ```powershell
