@@ -85,8 +85,11 @@ TTL, but each cache hit is conditionally revalidated with `If-None-Match` when
 the SaaS endpoint returns an `ETag`; disabled sources, salt rotation, and origin
 changes therefore fail closed instead of waiting for stale local cache expiry.
 If same-process ingestion is enabled, `ANALYTICS_SERVICE_SOURCES_JSON` is still
-required as the startup schema surface for enabled sources, and HTTP-resolved
-sources outside that startup surface are rejected.
+required when `ANALYTICS_SERVICE_SOURCE_RESOLVER=memory`. Under HTTP source
+resolution, local Docker development may start with an empty static source list.
+The runtime will ensure routed ClickHouse tables on the first accepted write for
+each source instead of forcing operators to precompute a startup schema surface
+by hand.
 
 When query mode is enabled, the service also exposes internal readback routes.
 Here, readback means trusted server-side queries that read already accepted

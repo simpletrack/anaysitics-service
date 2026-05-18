@@ -536,6 +536,7 @@ func newSourceResolver(cfg config.Config) (controlplane.Resolver, error) {
 			Timeout:               cfg.ControlPlaneTimeout,
 			CacheTTL:              cfg.ControlPlaneCacheTTL,
 			AllowInsecureLoopback: cfg.ControlPlaneAllowInsecureLoopback,
+			AllowInsecurePrivateNetwork: cfg.ControlPlaneAllowInsecurePrivateNetwork,
 		})
 	default:
 		return nil, configError("unsupported source resolver")
@@ -543,7 +544,7 @@ func newSourceResolver(cfg config.Config) (controlplane.Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.IngestionEnabled && cfg.SourceResolver == "http" {
+	if cfg.IngestionEnabled && cfg.SourceResolver == "http" && len(cfg.Sources) > 0 {
 		// Same-process ingestion validates ClickHouse tables only for the startup
 		// source list. Bind dynamic HTTP responses to that surface so a freshly
 		// created control-plane source cannot be accepted until its routed tables

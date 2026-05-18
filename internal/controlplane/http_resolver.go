@@ -25,6 +25,7 @@ type HTTPResolverOptions struct {
 	Timeout               time.Duration    // Timeout bounds each control-plane request when Client is not provided
 	CacheTTL              time.Duration    // CacheTTL caches successful source configs to reduce hot-path control-plane load
 	AllowInsecureLoopback bool             // AllowInsecureLoopback permits http:// loopback endpoints for local development only
+	AllowInsecurePrivateNetwork bool       // AllowInsecurePrivateNetwork permits explicit http:// container-network endpoints for local Docker development only
 	Now                   func() time.Time // Now returns the current time for cache expiry, primarily for tests
 	Client                *http.Client     // Client overrides the default HTTP client, primarily for tests
 }
@@ -67,7 +68,7 @@ func NewHTTPResolver(options HTTPResolverOptions) (*HTTPResolver, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("control-plane endpoint %q is not a valid absolute URL", endpoint)
 	}
-	if err := validateControlPlaneTransport(parsed, options.AllowInsecureLoopback); err != nil {
+	if err := validateControlPlaneTransport(parsed, options.AllowInsecureLoopback, options.AllowInsecurePrivateNetwork); err != nil {
 		return nil, err
 	}
 
@@ -260,7 +261,7 @@ func decodeRuntimeSource(body io.Reader, writeKey string) (SourceConfig, error) 
 	return source, nil
 }
 
-func validateControlPlaneTransport(endpoint *url.URL, allowInsecureLoopback bool) error {
+func validateControlPlaneTransport(endpoint *url.URL, allowInsecureLoopback bool, allowInsecurePrivateNetwork bool) error {
 	// Production control-plane reads carry bearer tokens and privacy salts, so
 	// HTTPS is mandatory unless a developer explicitly chooses loopback HTTP.
 	if endpoint.Scheme == "https" {
@@ -270,9 +271,14 @@ func validateControlPlaneTransport(endpoint *url.URL, allowInsecureLoopback bool
 		return fmt.Errorf("control-plane endpoint scheme %q is not supported", endpoint.Scheme)
 	}
 	if !allowInsecureLoopback {
-		return errors.New("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK=true is required for http control-plane endpoints")
+		if !allowInsecurePrivateNetwork {
+			return errors.New("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK=true or ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_PRIVATE_NETWORK=true is required for http control-plane endpoints")
+		}
 	}
 	if !isLoopbackHost(endpoint.Host) {
+		if allowInsecurePrivateNetwork && isPrivateNetworkHost(endpoint.Host) {
+			return nil
+		}
 		return errors.New("insecure control-plane endpoints are allowed only on loopback hosts")
 	}
 	return nil
@@ -291,4 +297,23 @@ func isLoopbackHost(hostPort string) bool {
 	}
 	addr, err := netip.ParseAddr(host)
 	return err == nil && addr.IsLoopback()
+}
+
+func isPrivateNetworkHost(hostPort string) bool {
+	host, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		host = hostPort
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err == nil {
+		return addr.IsPrivate()
+	}
+
+	// Docker service names such as `saas` or `analytics-service` are internal-only
+	// hostnames when used inside the local compose bridge network.
+	return !strings.Contains(host, ".")
 }

@@ -124,6 +124,15 @@ func newEventWriter(ctx context.Context, cfg config.Config, mysqlDB *gorm.DB, cl
 			return nil, err
 		}
 	}
+	if cfg.SourceResolver == "http" && cfg.IngestionEnabled {
+		// HTTP control-plane mode may start before any source exists, so the
+		// routed table family must be ensured on first write instead of failing
+		// startup on an empty boot-time schema surface.
+		writer, err = NewDynamicTableEnsuringWriter(clickConn, router, writer, cfg.PropertyIndexing)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return writer, nil
 }
 

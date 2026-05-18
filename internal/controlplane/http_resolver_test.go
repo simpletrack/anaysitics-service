@@ -270,6 +270,13 @@ func TestNewHTTPResolverRequiresHTTPSByDefault(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("expected explicit loopback http opt-in to pass: %v", err)
 	}
+	if _, err := NewHTTPResolver(HTTPResolverOptions{
+		Endpoint:                           "http://saas:3000/runtime",
+		BearerToken:                        "runtime-token",
+		AllowInsecurePrivateNetwork: true,
+	}); err != nil {
+		t.Fatalf("expected explicit private-network http opt-in to pass: %v", err)
+	}
 }
 
 func TestHTTPResolverDoesNotFollowRedirects(t *testing.T) {

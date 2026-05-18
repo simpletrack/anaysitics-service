@@ -189,6 +189,28 @@ func TestLoadFromEnvAcceptsIngestionStorageConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAcceptsHTTPIngestionWithoutStaticSources(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_REDIS_ADDR", "127.0.0.1:26379")
+	t.Setenv("ANALYTICS_SERVICE_INGESTION_ENABLED", "true")
+	t.Setenv("ANALYTICS_SERVICE_MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/analytics?parseTime=true")
+	t.Setenv("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", "127.0.0.1:9000")
+	t.Setenv("ANALYTICS_SERVICE_WORKER_CONSUMER", "consumer-test")
+	t.Setenv("ANALYTICS_SERVICE_SOURCE_RESOLVER", "http")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_URL", "https://control.example.com/runtime/source")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", "runtime-token")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected http ingestion config without static sources to load: %v", err)
+	}
+	if cfg.SourceResolver != "http" {
+		t.Fatalf("unexpected source resolver %q", cfg.SourceResolver)
+	}
+	if len(cfg.Sources) != 0 {
+		t.Fatalf("expected no static sources, got %#v", cfg.Sources)
+	}
+}
+
 func TestLoadFromEnvAcceptsKafkaIngestionStorageConfig(t *testing.T) {
 	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "kafka")
 	t.Setenv("ANALYTICS_SERVICE_KAFKA_BROKERS", "127.0.0.1:29092")
@@ -558,6 +580,23 @@ func TestLoadFromEnvAcceptsControlPlaneInsecureLoopbackFlag(t *testing.T) {
 	}
 	if !cfg.ControlPlaneAllowInsecureLoopback {
 		t.Fatalf("expected insecure loopback flag to be enabled")
+	}
+}
+
+func TestLoadFromEnvAcceptsControlPlaneInsecurePrivateNetworkFlag(t *testing.T) {
+	t.Setenv("ANALYTICS_SERVICE_EVENTBUS", "direct")
+	t.Setenv("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", "true")
+	t.Setenv("ANALYTICS_SERVICE_SOURCE_RESOLVER", "http")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_URL", "http://saas:3000/runtime-source")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", "runtime-token")
+	t.Setenv("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_PRIVATE_NETWORK", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected private-network flag to load: %v", err)
+	}
+	if !cfg.ControlPlaneAllowInsecurePrivateNetwork {
+		t.Fatalf("expected private-network flag to be enabled")
 	}
 }
 

@@ -58,6 +58,33 @@ func TestNewSourceResolverBindsHTTPResolverToIngestionSchemaSurface(t *testing.T
 	}
 }
 
+func TestNewSourceResolverLeavesHTTPResolverUnboundWhenStartupSurfaceIsEmpty(t *testing.T) {
+	remote := testRuntimeSource()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(remote)
+	}))
+	defer server.Close()
+
+	resolver, err := newSourceResolver(config.Config{
+		SourceResolver:                    "http",
+		ControlPlaneURL:                   server.URL,
+		ControlPlaneToken:                 "runtime-token",
+		ControlPlaneAllowInsecureLoopback: true,
+		IngestionEnabled:                  true,
+	})
+	if err != nil {
+		t.Fatalf("new source resolver failed: %v", err)
+	}
+
+	source, err := resolver.ResolveSource(context.Background(), remote.WriteKey)
+	if err != nil {
+		t.Fatalf("expected dynamic http resolver to accept source without startup surface: %v", err)
+	}
+	if source.SourceID != remote.SourceID {
+		t.Fatalf("unexpected source resolution %#v", source)
+	}
+}
+
 func TestNewKafkaTLSConfigUsesCAAndServerName(t *testing.T) {
 	caFile := filepath.Join(t.TempDir(), "ca.pem")
 	if err := os.WriteFile(caFile, []byte(testCertificatePEM(t)), 0o600); err != nil {
