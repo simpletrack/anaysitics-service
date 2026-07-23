@@ -17,7 +17,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             Dockerfile
@@ -34,14 +34,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           push: true
-          ssh: default
           tags: |
             ${{ env.IMAGE_REGISTRY }}/${{ steps.image_owner.outputs.owner }}/analytics-service:latest
             ${{ env.IMAGE_REGISTRY }}/${{ steps.image_owner.outputs.owner }}/analytics-service:${{ github.sha }}
