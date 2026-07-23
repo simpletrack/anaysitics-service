@@ -178,7 +178,7 @@ func TestLoadFromEnvAcceptsIngestionStorageConfig(t *testing.T) {
 	if !cfg.IngestionEnabled {
 		t.Fatalf("expected ingestion to be enabled")
 	}
-	if cfg.WorkerGroup != "simpletrack-anaysitics-service" {
+	if cfg.WorkerGroup != "simpletrack-analytics-service" {
 		t.Fatalf("unexpected worker group %q", cfg.WorkerGroup)
 	}
 	if cfg.ClickHouseTablePrefix != "events" {

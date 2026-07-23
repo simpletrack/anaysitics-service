@@ -37,7 +37,7 @@ RUN if [ "${GIT_PROTOCOL}" != "ssh" ] && [ -n "${GIT_CLONE_TOKEN}" ]; then \
 
 WORKDIR /src/analytics-service
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/simpletrack-anaysitics-service ./cmd/simpletrack-anaysitics-service
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/simpletrack-analytics-service ./cmd/simpletrack-analytics-service
 
 FROM alpine:3.22
 
@@ -45,7 +45,7 @@ RUN adduser -D -u 10001 simpletrack
 
 WORKDIR /app
 
-COPY --from=build /out/simpletrack-anaysitics-service /usr/local/bin/simpletrack-anaysitics-service
+COPY --from=build /out/simpletrack-analytics-service /usr/local/bin/simpletrack-analytics-service
 COPY --from=build /src/analytics-service/api ./api
 COPY --from=build /src/analytics-service/public ./public
 
@@ -53,4 +53,4 @@ EXPOSE 8080
 
 USER simpletrack
 
-ENTRYPOINT ["simpletrack-anaysitics-service"]
+ENTRYPOINT ["simpletrack-analytics-service"]

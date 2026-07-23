@@ -1,6 +1,6 @@
-# simpletrack-anaysitics-service
+# simpletrack-analytics-service
 
-`simpletrack-anaysitics-service` is the runtime analytics data-plane service for
+`simpletrack-analytics-service` is the runtime analytics data-plane service for
 SimpleTrack.
 
 It is intentionally separate from the SaaS control plane. The SaaS application
@@ -55,7 +55,7 @@ $env:ANALYTICS_SERVICE_SOURCES_JSON='[
     "include_client_fingerprint":true
   }
 ]'
-go run ./cmd/simpletrack-anaysitics-service
+go run ./cmd/simpletrack-analytics-service
 ```
 
 `session_salt`, `visit_salt`, and `client_hash_salt` are server-only runtime

@@ -30,8 +30,8 @@ const (
 	defaultDeadLetters      = "analytics.events.dead"
 	defaultKafkaTopic       = "analytics.events"
 	defaultKafkaDeadTopic   = "analytics.events.dead"
-	defaultKafkaClientID    = "simpletrack-anaysitics-service"
-	defaultWorkerGroup      = "simpletrack-anaysitics-service"
+	defaultKafkaClientID    = "simpletrack-analytics-service"
+	defaultWorkerGroup      = "simpletrack-analytics-service"
 	defaultTablePrefix      = "events"
 	defaultResolver         = "memory"
 )
@@ -48,79 +48,79 @@ type QueryTokenCredential struct {
 
 // Config contains process-level runtime settings.
 type Config struct {
-	Addr                              string                      // Addr is the Fiber listen address
-	CollectPath                       string                      // CollectPath is the event reporting route
-	HealthPath                        string                      // HealthPath is the health check route
-	TrackerPath                       string                      // TrackerPath is the browser tracker route
-	EventsPath                        string                      // EventsPath is the internal Events readback route
-	GoalsPath                         string                      // GoalsPath is the internal Goal summary readback route
-	RealtimePath                      string                      // RealtimePath is the internal Realtime readback route
-	PropertiesPath                    string                      // PropertiesPath is the internal property catalog read route
-	SwaggerEnabled                    bool                        // SwaggerEnabled exposes OpenAPI documentation routes
-	SwaggerPath                       string                      // SwaggerPath is the Swagger UI route prefix
-	OpenAPIFile                       string                      // OpenAPIFile is the local OpenAPI YAML or JSON file
-	TrackerFile                       string                      // TrackerFile is the local JavaScript asset path
-	TrustForwardedHeaders             bool                        // TrustForwardedHeaders enables proxy-provided client IP headers
-	GeoIPMMDBFile                     string                      // GeoIPMMDBFile enables offline MaxMind-compatible geo enrichment when set
-	EventBus                          string                      // EventBus selects redis, kafka, or explicitly allowed direct mode
-	AllowInMemoryBus                  bool                        // AllowInMemoryBus explicitly permits non-durable demo mode
-	RedisAddr                         string                      // RedisAddr is the Redis server address used for durable event enqueueing
-	RedisPassword                     string                      // RedisPassword is the optional Redis password
-	RedisDB                           int                         // RedisDB is the Redis logical database index
-	RedisStream                       string                      // RedisStream is the stream receiving accepted analytics events
-	RedisDeadLetterStream             string                      // RedisDeadLetterStream receives exhausted queue messages
-	RedisBlock                        time.Duration               // RedisBlock is the blocking read duration for future workers
-	RedisReadCount                    int64                       // RedisReadCount is the maximum messages read per poll
-	RedisMaxAttempts                  int                         // RedisMaxAttempts is the dead-letter threshold for future workers
-	KafkaBrokers                      []string                    // KafkaBrokers are bootstrap brokers for the production EventBus provider
-	KafkaTopic                        string                      // KafkaTopic receives accepted analytics event envelopes
-	KafkaDeadLetterTopic              string                      // KafkaDeadLetterTopic receives malformed or exhausted Kafka messages
-	KafkaClientID                     string                      // KafkaClientID identifies this service instance family to Kafka
-	KafkaMaxAttempts                  int                         // KafkaMaxAttempts is the handler attempt limit before Kafka DLQ
-	KafkaRetryBackoff                 time.Duration               // KafkaRetryBackoff spaces Kafka handler and DLQ retries
-	KafkaWorkers                      int                         // KafkaWorkers is the fixed Kafka handler worker count
-	KafkaQueueSize                    int                         // KafkaQueueSize is the bounded Kafka handler work queue size
-	KafkaCommitInterval               time.Duration               // KafkaCommitInterval controls Sarama offset commit cadence
-	KafkaTLSEnabled                   bool                        // KafkaTLSEnabled turns on TLS for Kafka broker connections
-	KafkaTLSServerName                string                      // KafkaTLSServerName overrides the broker certificate server name
-	KafkaTLSCAFile                    string                      // KafkaTLSCAFile is an optional PEM CA bundle for broker trust
-	KafkaTLSCertFile                  string                      // KafkaTLSCertFile is an optional client certificate PEM path
-	KafkaTLSKeyFile                   string                      // KafkaTLSKeyFile is the private key path for KafkaTLSCertFile
-	KafkaTLSInsecureSkipVerify        bool                        // KafkaTLSInsecureSkipVerify disables broker certificate verification for controlled tests
-	KafkaSASLEnabled                  bool                        // KafkaSASLEnabled turns on Kafka broker authentication
-	KafkaSASLMechanism                string                      // KafkaSASLMechanism selects the supported SASL mechanism
-	KafkaSASLUsername                 string                      // KafkaSASLUsername is the broker authentication identity
-	KafkaSASLPassword                 string                      // KafkaSASLPassword is the broker authentication secret
-	KafkaSASLHandshake                bool                        // KafkaSASLHandshake controls the Kafka SASL pre-auth handshake
-	KafkaDiagnosticsEnabled           bool                        // KafkaDiagnosticsEnabled exposes process-local Kafka provider diagnostics
-	KafkaDiagnosticsPath              string                      // KafkaDiagnosticsPath is the internal Kafka diagnostics readback route
-	KafkaMetricsEnabled               bool                        // KafkaMetricsEnabled exposes process-local Kafka provider metrics
-	KafkaMetricsPath                  string                      // KafkaMetricsPath is the internal Kafka metrics scrape route
-	IngestionEnabled                  bool                        // IngestionEnabled starts the runtime queue-to-storage worker
-	WorkerGroup                       string                      // WorkerGroup is the durable queue consumer group for ingestion
-	WorkerConsumer                    string                      // WorkerConsumer is the concrete consumer name for this process
-	MySQLDSN                          string                      // MySQLDSN stores ingestion idempotency checkpoints
-	MySQLAutoMigrate                  bool                        // MySQLAutoMigrate creates checkpoint tables at startup when enabled
-	ClickHouseAddr                    string                      // ClickHouseAddr is the native ClickHouse endpoint for event writes
-	ClickHouseDatabase                string                      // ClickHouseDatabase is the ClickHouse database for analytics events
-	ClickHouseUser                    string                      // ClickHouseUser authenticates the ClickHouse native connection
-	ClickHousePassword                string                      // ClickHousePassword authenticates the ClickHouse native connection
-	ClickHouseTablePrefix             string                      // ClickHouseTablePrefix is the safe prefix for routed event tables
-	ClickHouseAutoMigrate             bool                        // ClickHouseAutoMigrate creates routed ClickHouse event tables at startup
-	PropertyIndexing                  bool                        // PropertyIndexing writes typed property rows after primary events
-	PropertyCataloging                bool                        // PropertyCataloging records observed property selectors in MySQL metadata
-	SourceResolver                    string                      // SourceResolver selects memory or http runtime source resolution
-	ControlPlaneURL                   string                      // ControlPlaneURL is the SaaS runtime source resolver endpoint
-	ControlPlaneToken                 string                      // ControlPlaneToken authenticates service-to-SaaS config reads
-	ControlPlaneTimeout               time.Duration               // ControlPlaneTimeout bounds each SaaS resolver request
-	ControlPlaneCacheTTL              time.Duration               // ControlPlaneCacheTTL caches resolved runtime source configs
-	ControlPlaneAllowInsecureLoopback bool                        // ControlPlaneAllowInsecureLoopback allows http loopback control-plane URLs in local development
-	ControlPlaneAllowInsecurePrivateNetwork bool                  // ControlPlaneAllowInsecurePrivateNetwork allows http container-network control-plane URLs in local Docker development
-	QueryEnabled                      bool                        // QueryEnabled starts internal Events, Realtime, and property metadata read APIs
-	QueryToken                        string                      // QueryToken authorizes internal readback requests
-	QueryTokens                       []string                    // QueryTokens are accepted internal readback tokens during rotation windows
-	QueryCredentials                  []QueryTokenCredential      // QueryCredentials are accepted internal read tokens with activation and expiry metadata
-	Sources                           []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
+	Addr                                    string                      // Addr is the Fiber listen address
+	CollectPath                             string                      // CollectPath is the event reporting route
+	HealthPath                              string                      // HealthPath is the health check route
+	TrackerPath                             string                      // TrackerPath is the browser tracker route
+	EventsPath                              string                      // EventsPath is the internal Events readback route
+	GoalsPath                               string                      // GoalsPath is the internal Goal summary readback route
+	RealtimePath                            string                      // RealtimePath is the internal Realtime readback route
+	PropertiesPath                          string                      // PropertiesPath is the internal property catalog read route
+	SwaggerEnabled                          bool                        // SwaggerEnabled exposes OpenAPI documentation routes
+	SwaggerPath                             string                      // SwaggerPath is the Swagger UI route prefix
+	OpenAPIFile                             string                      // OpenAPIFile is the local OpenAPI YAML or JSON file
+	TrackerFile                             string                      // TrackerFile is the local JavaScript asset path
+	TrustForwardedHeaders                   bool                        // TrustForwardedHeaders enables proxy-provided client IP headers
+	GeoIPMMDBFile                           string                      // GeoIPMMDBFile enables offline MaxMind-compatible geo enrichment when set
+	EventBus                                string                      // EventBus selects redis, kafka, or explicitly allowed direct mode
+	AllowInMemoryBus                        bool                        // AllowInMemoryBus explicitly permits non-durable demo mode
+	RedisAddr                               string                      // RedisAddr is the Redis server address used for durable event enqueueing
+	RedisPassword                           string                      // RedisPassword is the optional Redis password
+	RedisDB                                 int                         // RedisDB is the Redis logical database index
+	RedisStream                             string                      // RedisStream is the stream receiving accepted analytics events
+	RedisDeadLetterStream                   string                      // RedisDeadLetterStream receives exhausted queue messages
+	RedisBlock                              time.Duration               // RedisBlock is the blocking read duration for future workers
+	RedisReadCount                          int64                       // RedisReadCount is the maximum messages read per poll
+	RedisMaxAttempts                        int                         // RedisMaxAttempts is the dead-letter threshold for future workers
+	KafkaBrokers                            []string                    // KafkaBrokers are bootstrap brokers for the production EventBus provider
+	KafkaTopic                              string                      // KafkaTopic receives accepted analytics event envelopes
+	KafkaDeadLetterTopic                    string                      // KafkaDeadLetterTopic receives malformed or exhausted Kafka messages
+	KafkaClientID                           string                      // KafkaClientID identifies this service instance family to Kafka
+	KafkaMaxAttempts                        int                         // KafkaMaxAttempts is the handler attempt limit before Kafka DLQ
+	KafkaRetryBackoff                       time.Duration               // KafkaRetryBackoff spaces Kafka handler and DLQ retries
+	KafkaWorkers                            int                         // KafkaWorkers is the fixed Kafka handler worker count
+	KafkaQueueSize                          int                         // KafkaQueueSize is the bounded Kafka handler work queue size
+	KafkaCommitInterval                     time.Duration               // KafkaCommitInterval controls Sarama offset commit cadence
+	KafkaTLSEnabled                         bool                        // KafkaTLSEnabled turns on TLS for Kafka broker connections
+	KafkaTLSServerName                      string                      // KafkaTLSServerName overrides the broker certificate server name
+	KafkaTLSCAFile                          string                      // KafkaTLSCAFile is an optional PEM CA bundle for broker trust
+	KafkaTLSCertFile                        string                      // KafkaTLSCertFile is an optional client certificate PEM path
+	KafkaTLSKeyFile                         string                      // KafkaTLSKeyFile is the private key path for KafkaTLSCertFile
+	KafkaTLSInsecureSkipVerify              bool                        // KafkaTLSInsecureSkipVerify disables broker certificate verification for controlled tests
+	KafkaSASLEnabled                        bool                        // KafkaSASLEnabled turns on Kafka broker authentication
+	KafkaSASLMechanism                      string                      // KafkaSASLMechanism selects the supported SASL mechanism
+	KafkaSASLUsername                       string                      // KafkaSASLUsername is the broker authentication identity
+	KafkaSASLPassword                       string                      // KafkaSASLPassword is the broker authentication secret
+	KafkaSASLHandshake                      bool                        // KafkaSASLHandshake controls the Kafka SASL pre-auth handshake
+	KafkaDiagnosticsEnabled                 bool                        // KafkaDiagnosticsEnabled exposes process-local Kafka provider diagnostics
+	KafkaDiagnosticsPath                    string                      // KafkaDiagnosticsPath is the internal Kafka diagnostics readback route
+	KafkaMetricsEnabled                     bool                        // KafkaMetricsEnabled exposes process-local Kafka provider metrics
+	KafkaMetricsPath                        string                      // KafkaMetricsPath is the internal Kafka metrics scrape route
+	IngestionEnabled                        bool                        // IngestionEnabled starts the runtime queue-to-storage worker
+	WorkerGroup                             string                      // WorkerGroup is the durable queue consumer group for ingestion
+	WorkerConsumer                          string                      // WorkerConsumer is the concrete consumer name for this process
+	MySQLDSN                                string                      // MySQLDSN stores ingestion idempotency checkpoints
+	MySQLAutoMigrate                        bool                        // MySQLAutoMigrate creates checkpoint tables at startup when enabled
+	ClickHouseAddr                          string                      // ClickHouseAddr is the native ClickHouse endpoint for event writes
+	ClickHouseDatabase                      string                      // ClickHouseDatabase is the ClickHouse database for analytics events
+	ClickHouseUser                          string                      // ClickHouseUser authenticates the ClickHouse native connection
+	ClickHousePassword                      string                      // ClickHousePassword authenticates the ClickHouse native connection
+	ClickHouseTablePrefix                   string                      // ClickHouseTablePrefix is the safe prefix for routed event tables
+	ClickHouseAutoMigrate                   bool                        // ClickHouseAutoMigrate creates routed ClickHouse event tables at startup
+	PropertyIndexing                        bool                        // PropertyIndexing writes typed property rows after primary events
+	PropertyCataloging                      bool                        // PropertyCataloging records observed property selectors in MySQL metadata
+	SourceResolver                          string                      // SourceResolver selects memory or http runtime source resolution
+	ControlPlaneURL                         string                      // ControlPlaneURL is the SaaS runtime source resolver endpoint
+	ControlPlaneToken                       string                      // ControlPlaneToken authenticates service-to-SaaS config reads
+	ControlPlaneTimeout                     time.Duration               // ControlPlaneTimeout bounds each SaaS resolver request
+	ControlPlaneCacheTTL                    time.Duration               // ControlPlaneCacheTTL caches resolved runtime source configs
+	ControlPlaneAllowInsecureLoopback       bool                        // ControlPlaneAllowInsecureLoopback allows http loopback control-plane URLs in local development
+	ControlPlaneAllowInsecurePrivateNetwork bool                        // ControlPlaneAllowInsecurePrivateNetwork allows http container-network control-plane URLs in local Docker development
+	QueryEnabled                            bool                        // QueryEnabled starts internal Events, Realtime, and property metadata read APIs
+	QueryToken                              string                      // QueryToken authorizes internal readback requests
+	QueryTokens                             []string                    // QueryTokens are accepted internal readback tokens during rotation windows
+	QueryCredentials                        []QueryTokenCredential      // QueryCredentials are accepted internal read tokens with activation and expiry metadata
+	Sources                                 []controlplane.SourceConfig // Sources are runtime source configs loaded from the control plane substitute
 }
 
 // LoadFromEnv loads service config from environment variables.
@@ -144,63 +144,63 @@ func LoadFromEnv() (Config, error) {
 			"ANALYTICS_SERVICE_TRUST_FORWARDED_HEADERS",
 			false,
 		),
-		GeoIPMMDBFile:                     envString("ANALYTICS_SERVICE_GEOIP_MMDB_FILE", ""),
-		EventBus:                          strings.ToLower(envString("ANALYTICS_SERVICE_EVENTBUS", defaultEventBus)),
-		AllowInMemoryBus:                  envBool("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", false),
-		RedisAddr:                         envString("ANALYTICS_SERVICE_REDIS_ADDR", ""),
-		RedisPassword:                     envString("ANALYTICS_SERVICE_REDIS_PASSWORD", ""),
-		RedisDB:                           envInt("ANALYTICS_SERVICE_REDIS_DB", 0),
-		RedisStream:                       envString("ANALYTICS_SERVICE_REDIS_STREAM", defaultRedisStream),
-		RedisDeadLetterStream:             envString("ANALYTICS_SERVICE_REDIS_DEAD_LETTER_STREAM", defaultDeadLetters),
-		RedisBlock:                        envDuration("ANALYTICS_SERVICE_REDIS_BLOCK", time.Second),
-		RedisReadCount:                    int64(envInt("ANALYTICS_SERVICE_REDIS_READ_COUNT", 10)),
-		RedisMaxAttempts:                  envInt("ANALYTICS_SERVICE_REDIS_MAX_ATTEMPTS", 5),
-		KafkaBrokers:                      parseCSV(envString("ANALYTICS_SERVICE_KAFKA_BROKERS", "")),
-		KafkaTopic:                        envString("ANALYTICS_SERVICE_KAFKA_TOPIC", defaultKafkaTopic),
-		KafkaDeadLetterTopic:              envString("ANALYTICS_SERVICE_KAFKA_DEAD_LETTER_TOPIC", defaultKafkaDeadTopic),
-		KafkaClientID:                     envString("ANALYTICS_SERVICE_KAFKA_CLIENT_ID", defaultKafkaClientID),
-		KafkaMaxAttempts:                  envInt("ANALYTICS_SERVICE_KAFKA_MAX_ATTEMPTS", 5),
-		KafkaRetryBackoff:                 envDuration("ANALYTICS_SERVICE_KAFKA_RETRY_BACKOFF", 250*time.Millisecond),
-		KafkaWorkers:                      envInt("ANALYTICS_SERVICE_KAFKA_WORKERS", 100),
-		KafkaQueueSize:                    envInt("ANALYTICS_SERVICE_KAFKA_QUEUE_SIZE", 200),
-		KafkaCommitInterval:               envDuration("ANALYTICS_SERVICE_KAFKA_COMMIT_INTERVAL", time.Second),
-		KafkaTLSEnabled:                   envBool("ANALYTICS_SERVICE_KAFKA_TLS_ENABLED", false),
-		KafkaTLSServerName:                envString("ANALYTICS_SERVICE_KAFKA_TLS_SERVER_NAME", ""),
-		KafkaTLSCAFile:                    envString("ANALYTICS_SERVICE_KAFKA_TLS_CA_FILE", ""),
-		KafkaTLSCertFile:                  envString("ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE", ""),
-		KafkaTLSKeyFile:                   envString("ANALYTICS_SERVICE_KAFKA_TLS_KEY_FILE", ""),
-		KafkaTLSInsecureSkipVerify:        envBool("ANALYTICS_SERVICE_KAFKA_TLS_INSECURE_SKIP_VERIFY", false),
-		KafkaSASLEnabled:                  envBool("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED", false),
-		KafkaSASLMechanism:                strings.ToLower(envString("ANALYTICS_SERVICE_KAFKA_SASL_MECHANISM", "plain")),
-		KafkaSASLUsername:                 envString("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", ""),
-		KafkaSASLPassword:                 envString("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", ""),
-		KafkaSASLHandshake:                envBool("ANALYTICS_SERVICE_KAFKA_SASL_HANDSHAKE", true),
-		KafkaDiagnosticsEnabled:           envBool("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", false),
-		KafkaDiagnosticsPath:              envString("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_PATH", defaultKafkaDiagPath),
-		KafkaMetricsEnabled:               envBool("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED", false),
-		KafkaMetricsPath:                  envString("ANALYTICS_SERVICE_KAFKA_METRICS_PATH", defaultKafkaMetricsPath),
-		IngestionEnabled:                  envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
-		WorkerGroup:                       envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
-		WorkerConsumer:                    envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
-		MySQLDSN:                          envString("ANALYTICS_SERVICE_MYSQL_DSN", ""),
-		MySQLAutoMigrate:                  envBool("ANALYTICS_SERVICE_MYSQL_AUTO_MIGRATE", false),
-		ClickHouseAddr:                    envString("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", ""),
-		ClickHouseDatabase:                envString("ANALYTICS_SERVICE_CLICKHOUSE_DATABASE", "default"),
-		ClickHouseUser:                    envString("ANALYTICS_SERVICE_CLICKHOUSE_USER", "default"),
-		ClickHousePassword:                envString("ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD", ""),
-		ClickHouseTablePrefix:             envString("ANALYTICS_SERVICE_CLICKHOUSE_TABLE_PREFIX", defaultTablePrefix),
-		ClickHouseAutoMigrate:             envBool("ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE", false),
-		PropertyIndexing:                  envBool("ANALYTICS_SERVICE_PROPERTY_INDEXING", true),
-		PropertyCataloging:                envBool("ANALYTICS_SERVICE_PROPERTY_CATALOGING", true),
-		SourceResolver:                    strings.ToLower(envString("ANALYTICS_SERVICE_SOURCE_RESOLVER", defaultResolver)),
-		ControlPlaneURL:                   envString("ANALYTICS_SERVICE_CONTROL_PLANE_URL", ""),
-		ControlPlaneToken:                 envString("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", ""),
-		ControlPlaneTimeout:               envDuration("ANALYTICS_SERVICE_CONTROL_PLANE_TIMEOUT", 3*time.Second),
-		ControlPlaneCacheTTL:              envDuration("ANALYTICS_SERVICE_CONTROL_PLANE_CACHE_TTL", 5*time.Second),
-		ControlPlaneAllowInsecureLoopback: envBool("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK", false),
+		GeoIPMMDBFile:                           envString("ANALYTICS_SERVICE_GEOIP_MMDB_FILE", ""),
+		EventBus:                                strings.ToLower(envString("ANALYTICS_SERVICE_EVENTBUS", defaultEventBus)),
+		AllowInMemoryBus:                        envBool("ANALYTICS_SERVICE_ALLOW_IN_MEMORY_BUS", false),
+		RedisAddr:                               envString("ANALYTICS_SERVICE_REDIS_ADDR", ""),
+		RedisPassword:                           envString("ANALYTICS_SERVICE_REDIS_PASSWORD", ""),
+		RedisDB:                                 envInt("ANALYTICS_SERVICE_REDIS_DB", 0),
+		RedisStream:                             envString("ANALYTICS_SERVICE_REDIS_STREAM", defaultRedisStream),
+		RedisDeadLetterStream:                   envString("ANALYTICS_SERVICE_REDIS_DEAD_LETTER_STREAM", defaultDeadLetters),
+		RedisBlock:                              envDuration("ANALYTICS_SERVICE_REDIS_BLOCK", time.Second),
+		RedisReadCount:                          int64(envInt("ANALYTICS_SERVICE_REDIS_READ_COUNT", 10)),
+		RedisMaxAttempts:                        envInt("ANALYTICS_SERVICE_REDIS_MAX_ATTEMPTS", 5),
+		KafkaBrokers:                            parseCSV(envString("ANALYTICS_SERVICE_KAFKA_BROKERS", "")),
+		KafkaTopic:                              envString("ANALYTICS_SERVICE_KAFKA_TOPIC", defaultKafkaTopic),
+		KafkaDeadLetterTopic:                    envString("ANALYTICS_SERVICE_KAFKA_DEAD_LETTER_TOPIC", defaultKafkaDeadTopic),
+		KafkaClientID:                           envString("ANALYTICS_SERVICE_KAFKA_CLIENT_ID", defaultKafkaClientID),
+		KafkaMaxAttempts:                        envInt("ANALYTICS_SERVICE_KAFKA_MAX_ATTEMPTS", 5),
+		KafkaRetryBackoff:                       envDuration("ANALYTICS_SERVICE_KAFKA_RETRY_BACKOFF", 250*time.Millisecond),
+		KafkaWorkers:                            envInt("ANALYTICS_SERVICE_KAFKA_WORKERS", 100),
+		KafkaQueueSize:                          envInt("ANALYTICS_SERVICE_KAFKA_QUEUE_SIZE", 200),
+		KafkaCommitInterval:                     envDuration("ANALYTICS_SERVICE_KAFKA_COMMIT_INTERVAL", time.Second),
+		KafkaTLSEnabled:                         envBool("ANALYTICS_SERVICE_KAFKA_TLS_ENABLED", false),
+		KafkaTLSServerName:                      envString("ANALYTICS_SERVICE_KAFKA_TLS_SERVER_NAME", ""),
+		KafkaTLSCAFile:                          envString("ANALYTICS_SERVICE_KAFKA_TLS_CA_FILE", ""),
+		KafkaTLSCertFile:                        envString("ANALYTICS_SERVICE_KAFKA_TLS_CERT_FILE", ""),
+		KafkaTLSKeyFile:                         envString("ANALYTICS_SERVICE_KAFKA_TLS_KEY_FILE", ""),
+		KafkaTLSInsecureSkipVerify:              envBool("ANALYTICS_SERVICE_KAFKA_TLS_INSECURE_SKIP_VERIFY", false),
+		KafkaSASLEnabled:                        envBool("ANALYTICS_SERVICE_KAFKA_SASL_ENABLED", false),
+		KafkaSASLMechanism:                      strings.ToLower(envString("ANALYTICS_SERVICE_KAFKA_SASL_MECHANISM", "plain")),
+		KafkaSASLUsername:                       envString("ANALYTICS_SERVICE_KAFKA_SASL_USERNAME", ""),
+		KafkaSASLPassword:                       envString("ANALYTICS_SERVICE_KAFKA_SASL_PASSWORD", ""),
+		KafkaSASLHandshake:                      envBool("ANALYTICS_SERVICE_KAFKA_SASL_HANDSHAKE", true),
+		KafkaDiagnosticsEnabled:                 envBool("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_ENABLED", false),
+		KafkaDiagnosticsPath:                    envString("ANALYTICS_SERVICE_KAFKA_DIAGNOSTICS_PATH", defaultKafkaDiagPath),
+		KafkaMetricsEnabled:                     envBool("ANALYTICS_SERVICE_KAFKA_METRICS_ENABLED", false),
+		KafkaMetricsPath:                        envString("ANALYTICS_SERVICE_KAFKA_METRICS_PATH", defaultKafkaMetricsPath),
+		IngestionEnabled:                        envBool("ANALYTICS_SERVICE_INGESTION_ENABLED", false),
+		WorkerGroup:                             envString("ANALYTICS_SERVICE_WORKER_GROUP", defaultWorkerGroup),
+		WorkerConsumer:                          envString("ANALYTICS_SERVICE_WORKER_CONSUMER", defaultWorkerConsumer()),
+		MySQLDSN:                                envString("ANALYTICS_SERVICE_MYSQL_DSN", ""),
+		MySQLAutoMigrate:                        envBool("ANALYTICS_SERVICE_MYSQL_AUTO_MIGRATE", false),
+		ClickHouseAddr:                          envString("ANALYTICS_SERVICE_CLICKHOUSE_ADDR", ""),
+		ClickHouseDatabase:                      envString("ANALYTICS_SERVICE_CLICKHOUSE_DATABASE", "default"),
+		ClickHouseUser:                          envString("ANALYTICS_SERVICE_CLICKHOUSE_USER", "default"),
+		ClickHousePassword:                      envString("ANALYTICS_SERVICE_CLICKHOUSE_PASSWORD", ""),
+		ClickHouseTablePrefix:                   envString("ANALYTICS_SERVICE_CLICKHOUSE_TABLE_PREFIX", defaultTablePrefix),
+		ClickHouseAutoMigrate:                   envBool("ANALYTICS_SERVICE_CLICKHOUSE_AUTO_MIGRATE", false),
+		PropertyIndexing:                        envBool("ANALYTICS_SERVICE_PROPERTY_INDEXING", true),
+		PropertyCataloging:                      envBool("ANALYTICS_SERVICE_PROPERTY_CATALOGING", true),
+		SourceResolver:                          strings.ToLower(envString("ANALYTICS_SERVICE_SOURCE_RESOLVER", defaultResolver)),
+		ControlPlaneURL:                         envString("ANALYTICS_SERVICE_CONTROL_PLANE_URL", ""),
+		ControlPlaneToken:                       envString("ANALYTICS_SERVICE_CONTROL_PLANE_TOKEN", ""),
+		ControlPlaneTimeout:                     envDuration("ANALYTICS_SERVICE_CONTROL_PLANE_TIMEOUT", 3*time.Second),
+		ControlPlaneCacheTTL:                    envDuration("ANALYTICS_SERVICE_CONTROL_PLANE_CACHE_TTL", 5*time.Second),
+		ControlPlaneAllowInsecureLoopback:       envBool("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_LOOPBACK", false),
 		ControlPlaneAllowInsecurePrivateNetwork: envBool("ANALYTICS_SERVICE_CONTROL_PLANE_ALLOW_INSECURE_PRIVATE_NETWORK", false),
-		QueryEnabled:                      envBool("ANALYTICS_SERVICE_QUERY_ENABLED", false),
-		QueryToken:                        envString("ANALYTICS_SERVICE_QUERY_TOKEN", ""),
+		QueryEnabled:                            envBool("ANALYTICS_SERVICE_QUERY_ENABLED", false),
+		QueryToken:                              envString("ANALYTICS_SERVICE_QUERY_TOKEN", ""),
 	}
 	queryCredentials, err := queryCredentialsFromEnv(config.QueryToken)
 	if err != nil {

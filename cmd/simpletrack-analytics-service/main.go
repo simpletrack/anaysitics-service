@@ -1,4 +1,4 @@
-// Command simpletrack-anaysitics-service starts the SimpleTrack analytics data-plane runtime.
+// Command simpletrack-analytics-service starts the SimpleTrack analytics data-plane runtime.
 package main
 
 import (
