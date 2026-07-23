@@ -11,7 +11,7 @@ permissions:
 
 env:
   IMAGE_REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: simpletrack
+  GIT_PROTOCOL: https
 
 jobs:
   build:
@@ -19,14 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: analytics-service
-
-      - uses: actions/checkout@v4
-        with:
-          repository: simpletrack/analytics-core
-          ref: main
-          path: analytics-core
-          token: ${{ secrets.ANALYTICS_CORE_CHECKOUT_TOKEN }}
+          sparse-checkout: |
+            Dockerfile
+          sparse-checkout-cone-mode: false
 
       - name: Resolve image owner
         id: image_owner
@@ -44,10 +39,15 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./analytics-service/Dockerfile
+          file: ./Dockerfile
           push: true
+          ssh: default
           tags: |
-            ${{ env.IMAGE_REGISTRY }}/${{ steps.image_owner.outputs.owner }}/${{ env.IMAGE_NAMESPACE }}/analytics-service:latest
-            ${{ env.IMAGE_REGISTRY }}/${{ steps.image_owner.outputs.owner }}/${{ env.IMAGE_NAMESPACE }}/analytics-service:${{ github.sha }}
+            ${{ env.IMAGE_REGISTRY }}/${{ steps.image_owner.outputs.owner }}/analytics-service:latest
+            ${{ env.IMAGE_REGISTRY }}/${{ steps.image_owner.outputs.owner }}/analytics-service:${{ github.sha }}
+          build-args: |
+            GIT_PROTOCOL=${{ env.GIT_PROTOCOL }}
+            GIT_CLONE_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            GIT_CLONE_REF=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
